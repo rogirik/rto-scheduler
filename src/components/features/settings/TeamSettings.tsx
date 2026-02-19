@@ -8,8 +8,6 @@ export const TeamSettings = () => {
   const [loading, setLoading] = useState(true);
   const [myRole, setMyRole] = useState('member');
 
-// Trigger update
-
   useEffect(() => {
     fetchTeamData();
   }, []);
