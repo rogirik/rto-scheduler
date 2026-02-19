@@ -30,27 +30,20 @@ export const LoginView = () => {
         if (authError) throw authError;
         if (!authData.user) throw new Error("No user created");
 
-        // --- 2. CREATE ORGANISATION (Internal DB uses 'z' for standardisation) ---
-        const { data: orgData, error: orgError } = await supabase
-          .from('organizations') 
-          .insert([{ name: formData.orgName || 'My New RTO' }])
-          .select()
-          .single();
+        // --- 2. SMART JOIN (Call the Database Function) ---
+        // This function checks if the Org exists. If yes -> Join. If no -> Create.
+        const { error: rpcError } = await supabase.rpc('join_or_create_org', {
+          org_name: formData.orgName,
+          target_user_id: authData.user.id
+        });
+
+        if (rpcError) throw rpcError;
+
+        setMessage("Account created! You have joined the workspace.");
         
-        if (orgError) throw orgError;
+        // Force a page reload to grab the new permissions
+        window.location.reload();
 
-        // --- 3. LINK USER TO ORG ---
-        const { error: profileError } = await supabase
-          .from('user_profiles')
-          .insert([{ 
-            id: authData.user.id, 
-            organization_id: orgData.id,
-            role: 'admin'
-          }]);
-          
-        if (profileError) throw profileError;
-
-        setMessage("Account & Organisation created! Please check your email.");
       } else {
         // --- SIGN IN ---
         const { error } = await supabase.auth.signInWithPassword({
@@ -77,7 +70,7 @@ export const LoginView = () => {
           </div>
           <h1 className="text-2xl font-bold text-white">Academic Scheduler</h1>
           <p className="text-slate-400 text-sm mt-2">
-            {isSignUp ? 'Create your RTO Workspace' : 'Sign in to your Workspace'}
+            {isSignUp ? 'Join or Create Workspace' : 'Sign in to your Workspace'}
           </p>
         </div>
 
@@ -107,10 +100,13 @@ export const LoginView = () => {
                     type="text" 
                     required={isSignUp}
                     className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-medium"
-                    placeholder="e.g. Melbourne City College"
+                    placeholder="Enter Exact RTO Name to Join"
                     value={formData.orgName}
                     onChange={e => setFormData({...formData, orgName: e.target.value})}
                   />
+                  <p className="text-[10px] text-slate-400 mt-1 ml-1">
+                    * Type the EXACT name to join an existing team.
+                  </p>
                 </div>
               </div>
             )}
@@ -150,7 +146,7 @@ export const LoginView = () => {
               disabled={isLoading}
               className="w-full bg-slate-900 text-white font-bold py-3 rounded-xl hover:bg-slate-800 transition-all flex items-center justify-center gap-2 shadow-lg shadow-slate-200"
             >
-              {isLoading ? <Loader2 className="animate-spin" /> : (isSignUp ? 'Create Workspace' : 'Sign In')}
+              {isLoading ? <Loader2 className="animate-spin" /> : (isSignUp ? 'Join / Create Workspace' : 'Sign In')}
             </button>
           </form>
 
@@ -159,7 +155,7 @@ export const LoginView = () => {
               onClick={() => setIsSignUp(!isSignUp)}
               className="text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors"
             >
-              {isSignUp ? "Already have an account? Sign In" : "New RTO? Create Account"}
+              {isSignUp ? "Already have an account? Sign In" : "New User? Join Team"}
             </button>
           </div>
 
