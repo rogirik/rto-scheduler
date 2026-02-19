@@ -21,6 +21,8 @@ import { SubjectList } from './components/features/subjects/SubjectList';
 import { CourseList } from './components/features/courses/CourseList';
 import { CalendarView } from './components/features/calendar/CalendarView'; 
 import { SettingsView } from './components/features/settings/SettingsView'; 
+import { TeamSettings } from './components/features/settings/TeamSettings';
+import { UpdatePasswordModal } from './components/auth/UpdatePasswordModal';
 
 function App() {
   const [session, setSession] = useState<any>(null);
@@ -139,7 +141,8 @@ function App() {
       <main className="flex-1 ml-64 p-8 overflow-y-auto h-screen">
         <div className="max-w-7xl mx-auto">
           {renderContent()}
-        </div>
+        <UpdatePasswordModal />
+	</div>
       </main>
 
     </div>

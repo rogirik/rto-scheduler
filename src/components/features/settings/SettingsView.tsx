@@ -13,10 +13,14 @@ import {
   FileText,
   ChevronDown,
   Edit2,
-  Users
+  Users // This is used for the new Team Tab
 } from 'lucide-react';
 import { ApiService } from '../../../services/api';
 import type { TermItem, HolidayItem } from '../../../services/api';
+
+// --- IMPORT THE NEW TEAM COMPONENT ---
+// This assumes TeamSettings.tsx is in the same folder as this file
+import { TeamSettings } from './TeamSettings';
 
 // --- AWARD PRESETS ---
 const AWARD_PRESETS = {
@@ -44,15 +48,17 @@ const AWARD_PRESETS = {
 };
 
 export const SettingsView = () => {
-  const [activeTab, setActiveTab] = useState<'industrial' | 'terms'>('industrial');
+  // Added 'team' to the allowed tabs
+  const [activeTab, setActiveTab] = useState<'industrial' | 'terms' | 'team'>('industrial');
 
   return (
     <div className="p-8 space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-slate-800">System Configuration</h2>
-        <p className="text-slate-500">Manage Industrial Agreements and Calendar Terms.</p>
+        <p className="text-slate-500">Manage Industrial Agreements, Calendar Terms, and Team Access.</p>
       </div>
 
+      {/* --- TABS NAVIGATION --- */}
       <div className="flex gap-6 border-b border-slate-200 overflow-x-auto">
         <button
           onClick={() => setActiveTab('industrial')}
@@ -75,11 +81,25 @@ export const SettingsView = () => {
           Terms & Holidays
           {activeTab === 'terms' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600"></div>}
         </button>
+
+        {/* NEW TEAM TAB */}
+        <button
+          onClick={() => setActiveTab('team')}
+          className={`pb-3 flex items-center gap-2 font-medium text-sm transition-colors relative whitespace-nowrap ${
+            activeTab === 'team' ? 'text-blue-600' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Users size={18} />
+          Team Management
+          {activeTab === 'team' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600"></div>}
+        </button>
       </div>
 
+      {/* --- MAIN CONTENT AREA --- */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm min-h-[500px] p-6">
         {activeTab === 'industrial' && <IndustrialPanel />}
         {activeTab === 'terms' && <TermsPanel />}
+        {activeTab === 'team' && <TeamSettings />} {/* Renders the new component */}
       </div>
     </div>
   );
@@ -91,7 +111,7 @@ const IndustrialPanel = () => {
   const [saving, setSaving] = useState(false);
   const [selectedAward, setSelectedAward] = useState<keyof typeof AWARD_PRESETS>('VIC_TAFE_2024');
   const [values, setValues] = useState(AWARD_PRESETS['VIC_TAFE_2024']);
-  const [applyGlobally, setApplyGlobally] = useState(true); // Default to updating everyone
+  const [applyGlobally, setApplyGlobally] = useState(true);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -145,14 +165,12 @@ const IndustrialPanel = () => {
   const handleSave = async () => {
       setSaving(true);
       try {
-          // 1. Save the Policy
           await ApiService.saveSettings({
               annual_award_hours: values.annualCap,
               default_agreement_name: values.name,
               selected_award: selectedAward 
           });
 
-          // 2. Bulk Update Staff (The "Global" Fix)
           if (applyGlobally) {
              await ApiService.bulkUpdateTeacherLimits(values.annualCap);
           }
@@ -198,7 +216,6 @@ const IndustrialPanel = () => {
         </div>
         
         <div className="flex flex-col gap-2 items-end">
-             {/* GLOBAL UPDATE TOGGLE */}
             <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
                 <input 
                     type="checkbox" 
@@ -297,14 +314,8 @@ const IndustrialPanel = () => {
   );
 };
 
-// ... TermsPanel remains unchanged ...
-// (I will omit TermsPanel here to save space, assume it is unchanged from previous success)
+// --- SUB-COMPONENT: TERMS PANEL ---
 const TermsPanel = () => {
-    // ... [Same as before] ...
-    // Just putting a placeholder to confirm I'm not deleting it.
-    // In your real file, KEEP the TermsPanel code!
-    // Since I must provide the FULL file to avoid errors, I will include it below:
-    
   const [currentYear, setCurrentYear] = useState('2026');
   const [selectedState, setSelectedState] = useState('VIC');
   const [loading, setLoading] = useState(false);
