@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
+import { supabase } from '../../../services/supabase'; // NEEDED FOR DIRECT UPSERT
 import type { Teacher, DaySchedule } from '../../../services/api';
-import { Trash2, RotateCcw, AlertTriangle, Clock, Loader2, X, Save } from 'lucide-react';
+import { Trash2, RotateCcw, AlertTriangle, Clock, Loader2, X, Save, CalendarOff, Plus } from 'lucide-react';
 
 interface TeacherFormProps {
   initialData?: Teacher | null;
   onClose: () => void;
   onSuccess: () => void;
+}
+
+// NEW: Interface for Holiday Ranges
+interface DateRange {
+  start: string;
+  end: string;
 }
 
 export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProps) => {
@@ -32,7 +39,10 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
     time_fraction: 1.0, 
     max_hours: 800,
     trains_online: false,
-    schedule: defaultSchedule
+    schedule: defaultSchedule,
+    // --- Leave & Blackout States ---
+    leave_date: '',
+    blackout_dates: [] as DateRange[] // Upgraded to array of DateRange objects
   });
 
   // 1. Fetch Global Settings
@@ -59,6 +69,16 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
       const savedSchedule = (initialData.availability as any)?.schedule || {};
       const mergedSchedule = { ...defaultSchedule, ...savedSchedule };
 
+      // Safely migrate any old single-string dates into the new DateRange format
+      let parsedBlackouts: DateRange[] = [];
+      const rawBlackouts = (initialData as any).blackout_dates;
+      if (Array.isArray(rawBlackouts)) {
+          parsedBlackouts = rawBlackouts.map(b => {
+              if (typeof b === 'string') return { start: b, end: b }; 
+              return { start: b.start || '', end: b.end || '' };
+          });
+      }
+
       setFormData({
         name: initialData.name || '',
         email: initialData.email || '',
@@ -67,7 +87,10 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
         time_fraction: initialData.time_fraction || 1.0, 
         max_hours: initialData.max_hours || globalAwardHours,
         trains_online: initialData.trains_online || false,
-        schedule: mergedSchedule
+        schedule: mergedSchedule,
+        // Hydrate Leave & Blackout States
+        leave_date: (initialData as any).leave_date || '',
+        blackout_dates: parsedBlackouts
       });
     }
   }, [initialData, globalAwardHours]);
@@ -107,10 +130,36 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
       }));
   };
 
+  // --- UPGRADED: RANGE HANDLERS ---
+  const addBlackoutDate = () => {
+    setFormData(prev => ({ ...prev, blackout_dates: [...prev.blackout_dates, { start: '', end: '' }] }));
+  };
+
+  const updateBlackoutDate = (index: number, field: 'start' | 'end', value: string) => {
+    const updated = [...formData.blackout_dates];
+    updated[index] = { ...updated[index], [field]: value };
+    setFormData({ ...formData, blackout_dates: updated });
+  };
+
+  const removeBlackoutDate = (index: number) => {
+    setFormData(prev => ({
+        ...prev,
+        blackout_dates: prev.blackout_dates.filter((_, i) => i !== index)
+    }));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
+      // Clean up empty ranges before saving. If only one date is provided, mirror it.
+      const cleanedBlackouts = formData.blackout_dates
+        .filter(d => d.start.trim() !== '' || d.end.trim() !== '')
+        .map(d => ({
+            start: d.start || d.end,
+            end: d.end || d.start
+        }));
+
       const payload: any = {
           name: formData.name,
           email: formData.email,
@@ -121,13 +170,20 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
           trains_online: formData.trains_online,
           availability: {
               schedule: formData.schedule
-          }
+          },
+          // Include Leave & Blackouts in Payload
+          leave_date: formData.leave_date || null,
+          blackout_dates: cleanedBlackouts
       };
 
       if (initialData) {
-        await ApiService.updateTeacher(initialData.id, payload);
+        payload.id = initialData.id;
+        // Using direct supabase upsert to guarantee custom columns save correctly
+        const { error } = await supabase.from('teachers').upsert(payload);
+        if (error) throw error;
       } else {
-        await ApiService.createTeacher(payload);
+        const { error } = await supabase.from('teachers').insert([payload]);
+        if (error) throw error;
       }
       onSuccess();
     } catch (error) {
@@ -148,7 +204,6 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
       { id: 0, label: 'Sunday' },
   ];
 
-  // --- ACTIONS (FIXED CRASH HERE) ---
   const handleClose = (e?: React.MouseEvent) => {
       if (e) e.preventDefault(); 
       if (typeof onClose === 'function') {
@@ -177,7 +232,7 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
     try {
       await ApiService.deleteTeacher(initialData.id);
       onSuccess(); 
-      handleClose(); // Use safe close
+      handleClose(); 
     } catch (e) {
       alert("Failed to delete.");
       setLoading(false);
@@ -199,7 +254,7 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
         </div>
 
         {/* FORM CONTENT */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 overflow-y-auto p-6">
             <form id="teacher-form" onSubmit={handleSubmit} className="space-y-6">
             
             {/* Name & Email */}
@@ -337,9 +392,76 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
                   })}
                 </div>
             </div>
+
+            {/* --- UPGRADED: LEAVE & BLACKOUTS --- */}
+            <div className="border border-amber-200 rounded-lg p-4 bg-amber-50 space-y-4">
+                <label className="block text-sm font-bold text-amber-900 flex items-center gap-2 border-b border-amber-200 pb-2">
+                  <CalendarOff size={16} /> Leave & Holiday Exceptions
+                </label>
+                
+                {/* Specific Holidays First */}
+                <div>
+                    <label className="block text-xs font-bold text-amber-800 uppercase mb-2">Approved Leave / Holiday Ranges</label>
+                    <div className="space-y-3">
+                        {formData.blackout_dates.map((range, idx) => (
+                            <div key={idx} className="flex gap-2 items-center bg-white p-2 rounded-lg border border-slate-200">
+                                <div className="flex-1 flex items-center gap-2">
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Start Date</label>
+                                        <input 
+                                            type="date" 
+                                            className="w-full px-2 py-1 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
+                                            value={range.start} 
+                                            onChange={e => updateBlackoutDate(idx, 'start', e.target.value)} 
+                                        />
+                                    </div>
+                                    <span className="text-slate-300 mt-4 text-xs font-bold">to</span>
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">End Date</label>
+                                        <input 
+                                            type="date" 
+                                            className="w-full px-2 py-1 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
+                                            value={range.end} 
+                                            onChange={e => updateBlackoutDate(idx, 'end', e.target.value)} 
+                                        />
+                                    </div>
+                                </div>
+                                <button 
+                                    type="button" 
+                                    onClick={() => removeBlackoutDate(idx)}
+                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100 mt-4"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                    <button 
+                        type="button" 
+                        onClick={addBlackoutDate}
+                        className="mt-2 text-xs font-bold text-blue-600 flex items-center gap-1 hover:text-blue-800 transition-colors py-1 px-2 bg-blue-100/50 hover:bg-blue-100 rounded-md"
+                    >
+                        <Plus size={14} /> Add Holiday Range
+                    </button>
+                </div>
+
+                {/* Resignation Second */}
+                <div className="bg-red-50 p-3 rounded-lg border border-red-100">
+                    <label className="block text-xs font-bold text-red-800 uppercase mb-1">Resignation / Last Day</label>
+                    <input 
+                        type="date" 
+                        className="w-full px-3 py-1.5 border border-red-200 rounded-lg focus:ring-2 focus:ring-red-500 outline-none bg-white text-sm" 
+                        value={formData.leave_date} 
+                        onChange={e => setFormData({...formData, leave_date: e.target.value})} 
+                    />
+                    <p className="text-[10px] text-red-600 mt-1 font-medium">Auto-allocator will ignore this trainer after this date.</p>
+                </div>
+            </div>
+            {/* --- END UPGRADED --- */}
+
             </form>
 
-            {/* DANGER ZONE */}
+            {/* DANGER ZONE (Unchanged) */}
             {initialData && (
                 <div className="mt-8 pt-6 border-t border-red-100">
                     <h4 className="text-xs font-bold text-red-800 uppercase mb-3 flex items-center gap-2">
