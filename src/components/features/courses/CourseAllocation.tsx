@@ -1,19 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
+import { supabase } from '../../../services/supabase';
 import type { CourseInstance, UnitAllocation, Teacher, Subject, Course } from '../../../services/api';
 import { 
   X, 
-  Save, 
   AlertTriangle, 
   CheckCircle2, 
   User, 
   Loader2, 
-  Clock, 
   ShieldAlert, 
-  Trash2, 
   Search,
   ArrowRight,
-  Filter
+  BookOpen,
+  RotateCcw
 } from 'lucide-react';
 
 interface Props {
@@ -36,6 +35,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   // UI State
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(null);
   const [teacherSearch, setTeacherSearch] = useState('');
+  const [processingSubjectId, setProcessingSubjectId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -82,7 +82,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       let isCritical = false;
 
       // 1. ONLINE CHECK
-      // If teacher is Online Only (true) AND Delivery is NOT Online
       if (teacher.trains_online && instance.delivery_mode !== 'Online') {
           warnings.push("Online Only (Incompatible Mode)");
       }
@@ -96,7 +95,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           const sub = subjects.find(s => s.id === alloc.subject_id);
           if (sub) currentAnnualLoad += (sub.hours || 0);
       });
-      // Add pending subject if not assigned to this instance yet
       if (!teacherAllocations.some(a => a.instance_id === instance.id && a.subject_id === subject.id)) {
           currentAnnualLoad += (subject.hours || 0);
       }
@@ -138,41 +136,72 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   // Actions
   const handleAssign = async (teacherId: string) => {
     if (!selectedSubjectId) return;
+    setProcessingSubjectId(selectedSubjectId);
 
-    const existingAlloc = currentAllocations.find(a => a.subject_id === selectedSubjectId);
-    const payload = {
-        id: existingAlloc?.id, 
-        instance_id: instance.id,
-        subject_id: selectedSubjectId,
-        teacher_id: teacherId 
-    };
+    try {
+        const existingAlloc = currentAllocations.find(a => a.subject_id === selectedSubjectId);
+        const payload = {
+            id: existingAlloc?.id, 
+            instance_id: instance.id,
+            subject_id: selectedSubjectId,
+            teacher_id: teacherId 
+        };
 
-    const newAllocations = existingAlloc 
-        ? currentAllocations.map(a => a.subject_id === selectedSubjectId ? { ...a, teacher_id: teacherId } : a)
-        : [...currentAllocations, { ...payload, id: 'temp-' + Date.now() } as UnitAllocation];
-    
-    // If teacherId is null, remove allocation
-    const finalLocal = teacherId ? newAllocations : currentAllocations.filter(a => a.subject_id !== selectedSubjectId);
+        const newAllocations = existingAlloc 
+            ? currentAllocations.map(a => a.subject_id === selectedSubjectId ? { ...a, teacher_id: teacherId } : a)
+            : [...currentAllocations, { ...payload, id: 'temp-' + Date.now() } as UnitAllocation];
+        
+        setCurrentAllocations(newAllocations);
 
-    setCurrentAllocations(finalLocal);
+        const newGlobal = existingAlloc
+            ? globalAllocations.map(a => a.id === existingAlloc.id ? { ...a, teacher_id: teacherId } : a)
+            : [...globalAllocations, { ...payload, id: 'temp-' + Date.now() } as UnitAllocation];
+        
+        setGlobalAllocations(newGlobal.filter(a => a.teacher_id)); 
 
-    // Update Global Allocations so the "Clash Detector" is aware instantly
-    const newGlobal = existingAlloc
-        ? globalAllocations.map(a => a.id === existingAlloc.id ? { ...a, teacher_id: teacherId } : a)
-        : [...globalAllocations, { ...payload, id: 'temp-' + Date.now() } as UnitAllocation];
-    
-    setGlobalAllocations(newGlobal.filter(a => a.teacher_id)); 
-
-    if (teacherId) {
         await ApiService.saveAllocation(payload);
+        
+        const updatedAlloc = await supabase.from('unit_allocations').select('*').eq('instance_id', instance.id);
+        if(updatedAlloc.data) setCurrentAllocations(updatedAlloc.data);
+        
+    } catch (e) {
+        alert("Assignment failed.");
+    } finally {
+        setProcessingSubjectId(null);
+    }
+  };
+
+  const handleRemove = async (subjectId: string, e: React.MouseEvent) => {
+    e.stopPropagation(); 
+    setProcessingSubjectId(subjectId);
+    
+    try {
+      const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
+      if (existingAlloc && existingAlloc.id) {
+        await supabase.from('unit_allocations').delete().eq('id', existingAlloc.id);
+        
+        setCurrentAllocations(prev => prev.filter(a => a.subject_id !== subjectId));
+        setGlobalAllocations(prev => prev.filter(a => a.id !== existingAlloc.id));
+      }
+    } catch (e) {
+      alert("Failed to remove trainer.");
+    } finally {
+      setProcessingSubjectId(null);
     }
   };
 
   const handleClearCourse = async () => {
       if (!confirm("Are you sure you want to clear ALL teacher assignments for this course?")) return;
-      setCurrentAllocations([]);
-      // Simulate backend clear or loop delete
-      // Ideally: await ApiService.globalClearTeacher(instance.id);
+      setLoading(true);
+      try {
+          await supabase.from('unit_allocations').delete().eq('instance_id', instance.id);
+          setCurrentAllocations([]);
+          setGlobalAllocations(prev => prev.filter(a => a.instance_id !== instance.id));
+      } catch (e) {
+          alert("Clear failed.");
+      } finally {
+          setLoading(false);
+      }
   };
 
   const getAssignedTeacherId = (subjectId: string) => {
@@ -190,13 +219,16 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   const filteredTeachers = teachers.filter(t => t.name.toLowerCase().includes(teacherSearch.toLowerCase()));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
         
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
-            <h2 className="text-xl font-bold text-slate-800">Assign Teachers</h2>
+            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <BookOpen className="text-blue-600" size={24}/>
+                Assign Trainers
+            </h2>
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500">
                 <span className="font-bold text-blue-600">{instance.name}</span>
                 <span>•</span>
@@ -208,9 +240,9 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           <div className="flex gap-3">
               <button 
                 onClick={handleClearCourse}
-                className="px-3 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg font-bold text-xs transition-colors border border-red-200"
+                className="px-3 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg font-bold text-xs transition-colors border border-red-200 flex items-center gap-1"
               >
-                  Clear All
+                  <RotateCcw size={14} /> Clear All
               </button>
               <button onClick={() => { onUpdate(); onClose(); }} className="text-slate-400 hover:text-slate-600 p-2"><X size={24} /></button>
           </div>
@@ -230,6 +262,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                         const assignedTeacher = teachers.find(t => t.id === assignedId);
                         const isSelected = selectedSubjectId === subject.id;
                         const status = assignedId ? getTeacherStatus(assignedId, subject.id) : null;
+                        const isProcessing = processingSubjectId === subject.id;
 
                         return (
                             <div 
@@ -241,46 +274,53 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                                     : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-sm'
                                 }`}
                             >
-                                <div className="flex justify-between items-start mb-2">
+                                <div className="flex justify-between items-start mb-3">
                                     <div className="flex items-center gap-3">
                                         <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
                                             {index + 1}
                                         </div>
-                                        <span className="font-bold text-slate-700 text-sm">{subject.name}</span>
+                                        <div className="flex flex-col">
+                                            <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
+                                                {subject.code}
+                                                {((subject as any).is_online || (subject as any).delivery_mode === 'Online') && (
+                                                    <span className="bg-blue-50 text-blue-600 border border-blue-200 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider">Online Allowed</span>
+                                                )}
+                                            </span>
+                                            <span className="text-xs text-slate-500 mt-0.5">{subject.name}</span>
+                                        </div>
                                     </div>
-                                    <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                                    <span className="text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">
                                         {subject.hours}h
                                     </span>
                                 </div>
 
-                                {/* Assignment Status Display */}
                                 <div className="pl-9">
-                                    {assignedTeacher ? (
-                                        <div className={`flex items-center justify-between p-2 rounded-lg text-sm ${status ? (status.isCritical ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-amber-50 text-amber-700 border border-amber-100') : 'bg-blue-50 text-blue-700 border border-blue-100'}`}>
-                                            <div className="flex items-center gap-2">
-                                                <User size={14} />
-                                                <span className="font-bold">{assignedTeacher.name}</span>
+                                    {isProcessing ? (
+                                        <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-100 text-slate-500 text-sm font-bold border border-slate-200 w-fit">
+                                            <Loader2 size={14} className="animate-spin" /> Processing...
+                                        </div>
+                                    ) : assignedTeacher ? (
+                                        <div className={`flex items-center justify-between p-2 rounded-lg text-sm border ${status ? (status.isCritical ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200') : 'bg-emerald-50 text-emerald-800 border-emerald-200'}`}>
+                                            <div className="flex items-center gap-2 font-bold">
+                                                {status ? (status.isCritical ? <ShieldAlert size={16} /> : <AlertTriangle size={16} />) : <CheckCircle2 size={16} className="text-emerald-500" />}
+                                                {assignedTeacher.name}
+                                                {status && <span className="text-xs font-normal opacity-80 bg-white/50 px-2 py-0.5 rounded ml-1">{status.warnings[0]}</span>}
                                             </div>
-                                            <div className="flex items-center gap-2">
-                                                {status && <AlertTriangle size={14} />}
-                                                <button 
-                                                    onClick={(e) => { e.stopPropagation(); handleAssign(""); }}
-                                                    className="hover:bg-white/50 p-1 rounded transition-colors"
-                                                >
-                                                    <X size={14} />
-                                                </button>
-                                            </div>
+                                            
+                                            <button 
+                                                onClick={(e) => handleRemove(subject.id, e)}
+                                                className={`p-1.5 rounded-md transition-colors ${status ? (status.isCritical ? 'hover:bg-red-200 text-red-600' : 'hover:bg-amber-200 text-amber-700') : 'hover:bg-emerald-200 text-emerald-700'}`}
+                                                title="Unassign Trainer"
+                                            >
+                                                <X size={16} />
+                                            </button>
                                         </div>
                                     ) : (
-                                        <div className="text-xs text-slate-400 italic p-2 border border-dashed border-slate-200 rounded-lg">
-                                            Unassigned
+                                        <div className="text-xs text-slate-400 font-bold p-2 border border-dashed border-slate-300 rounded-lg w-fit">
+                                            Unassigned - Click to select
                                         </div>
                                     )}
                                 </div>
-                                
-                                {isSelected && (
-                                    <div className="absolute right-[-1px] top-1/2 -translate-y-1/2 w-4 h-8 bg-blue-500 rounded-l clip-arrow hidden"></div>
-                                )}
                             </div>
                         );
                     })}
@@ -290,7 +330,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             {/* RIGHT: TEACHERS (RESOURCES) */}
             <div className="w-1/2 flex flex-col bg-white">
                 <div className="p-4 border-b border-slate-200">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">2. Assign Teacher</h3>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex justify-between items-center">
+                        <span>2. Assign Teacher</span>
+                        {selectedSubjectId && <span className="text-blue-500">Click a name to assign</span>}
+                    </h3>
                     <div className="relative">
                         <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
                         <input 
@@ -304,25 +347,28 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
                     {filteredTeachers.map(teacher => {
-                        // Calculate status relative to SELECTED subject
-                        const currentStatus = selectedSubjectId 
-                            ? getTeacherStatus(teacher.id, selectedSubjectId) 
-                            : null;
-                        
+                        const currentStatus = selectedSubjectId ? getTeacherStatus(teacher.id, selectedSubjectId) : null;
                         const isCritical = currentStatus?.isCritical;
                         const isAssignedToSelected = selectedSubjectId && getAssignedTeacherId(selectedSubjectId) === teacher.id;
+
+                        const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacher.id);
+                        let displayLoad = 0;
+                        teacherAllocations.forEach(alloc => {
+                            const sub = subjects.find(s => s.id === alloc.subject_id);
+                            if (sub) displayLoad += (sub.hours || 0);
+                        });
 
                         return (
                             <button
                                 key={teacher.id}
-                                disabled={!selectedSubjectId}
+                                disabled={!selectedSubjectId || isAssignedToSelected || processingSubjectId !== null}
                                 onClick={() => selectedSubjectId && handleAssign(teacher.id)}
                                 className={`w-full text-left p-3 rounded-xl border flex items-center gap-3 transition-all group ${
                                     isAssignedToSelected 
-                                    ? 'bg-blue-600 border-blue-600 text-white shadow-md ring-2 ring-blue-200' 
-                                    : !selectedSubjectId 
+                                    ? 'bg-emerald-600 border-emerald-600 text-white shadow-md cursor-default' 
+                                    : !selectedSubjectId || processingSubjectId !== null
                                         ? 'opacity-50 cursor-not-allowed bg-slate-50 border-slate-100'
-                                        : 'hover:border-blue-300 hover:shadow-sm bg-white border-slate-200'
+                                        : 'hover:border-blue-400 hover:shadow-md bg-white border-slate-200'
                                 }`}
                             >
                                 <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${isAssignedToSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
@@ -334,32 +380,41 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                                         <span className={`font-bold ${isAssignedToSelected ? 'text-white' : 'text-slate-800'}`}>
                                             {teacher.name}
                                         </span>
-                                        {teacher.trains_online && (
-                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${isAssignedToSelected ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-700'}`}>
-                                                Online Only
+                                        <div className="flex items-center gap-2">
+                                            <span className={`text-[10px] font-bold ${isAssignedToSelected ? 'text-emerald-100' : 'text-slate-400'}`}>
+                                                Load: {displayLoad}/{teacher.max_hours || 800}h
                                             </span>
-                                        )}
+                                            {teacher.trains_online && (
+                                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${isAssignedToSelected ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-700'}`}>
+                                                    Online
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                     
-                                    {/* STATUS BADGE IN LIST */}
-                                    <div className={`text-xs mt-1 truncate ${isAssignedToSelected ? 'text-blue-100' : 'text-slate-500'}`}>
+                                    <div className={`text-xs mt-1 truncate ${isAssignedToSelected ? 'text-emerald-100' : 'text-slate-500'}`}>
                                         {currentStatus ? (
-                                            <span className={`flex items-center gap-1 font-bold ${isCritical ? (isAssignedToSelected ? 'text-red-100' : 'text-red-600') : (isAssignedToSelected ? 'text-amber-100' : 'text-amber-600')}`}>
+                                            <span className={`flex items-center gap-1 font-bold ${isCritical ? (isAssignedToSelected ? 'text-red-100' : 'text-red-500') : (isAssignedToSelected ? 'text-amber-100' : 'text-amber-500')}`}>
                                                 {isCritical ? <ShieldAlert size={12} /> : <AlertTriangle size={12} />}
                                                 {currentStatus.warnings[0]}
                                             </span>
                                         ) : (
                                             <span className="flex items-center gap-1">
-                                                <CheckCircle2 size={12} className={isAssignedToSelected ? 'text-blue-200' : 'text-emerald-500'} />
-                                                Available
+                                                <CheckCircle2 size={12} className={isAssignedToSelected ? 'text-emerald-200' : 'text-slate-400'} />
+                                                Available for assignment
                                             </span>
                                         )}
                                     </div>
                                 </div>
 
                                 {!isAssignedToSelected && selectedSubjectId && (
-                                    <div className="opacity-0 group-hover:opacity-100 text-blue-600">
-                                        <ArrowRight size={20} />
+                                    <div className="opacity-0 group-hover:opacity-100 text-blue-500 font-bold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center gap-1">
+                                        Assign <ArrowRight size={14} />
+                                    </div>
+                                )}
+                                {isAssignedToSelected && (
+                                    <div className="text-white font-bold flex items-center gap-1 pr-2">
+                                        <CheckCircle2 size={18} /> Assigned
                                     </div>
                                 )}
                             </button>
@@ -370,10 +425,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-200 bg-white flex justify-end">
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end">
             <button 
                 onClick={() => { onUpdate(); onClose(); }}
-                className="px-8 py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 shadow-lg hover:shadow-xl transition-all"
+                className="px-8 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-md hover:shadow-lg transition-all"
             >
                 Done
             </button>

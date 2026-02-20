@@ -135,10 +135,11 @@ export const CourseList = () => {
                     // Check Mode
                     if (effectiveMode === 'Online' && !teacher.trains_online) continue;
 
-                    // --- NEW: TEACHER CALENDAR AVAILABILITY CHECK ---
+                    // --- FULL TEACHER CALENDAR AVAILABILITY CHECK ---
                     let isAvailable = true;
                     const teacherLeaveDate = (teacher as any).leave_date;
                     const teacherBlackouts = (teacher as any).blackout_dates || [];
+                    const teacherSchedule = (teacher.availability as any)?.schedule || {};
 
                     for (const classDate of requiredDates) {
                         // A. Did the teacher leave the company before or on this class date?
@@ -146,8 +147,28 @@ export const CourseList = () => {
                             isAvailable = false;
                             break;
                         }
-                        // B. Is the teacher on holiday on this exact date?
-                        if (Array.isArray(teacherBlackouts) && teacherBlackouts.includes(classDate)) {
+                        
+                        // B. Is the teacher on holiday on this exact date? (Range Check)
+                        if (Array.isArray(teacherBlackouts)) {
+                            const isOnHoliday = teacherBlackouts.some((range: any) => {
+                                if (typeof range === 'string') return range === classDate;
+                                if (range && range.start && range.end) {
+                                    return classDate >= range.start && classDate <= range.end;
+                                }
+                                return false;
+                            });
+                            if (isOnHoliday) {
+                                isAvailable = false;
+                                break;
+                            }
+                        }
+
+                        // C. Does the teacher actually work on this day of the week?
+                        const [y, m, d] = classDate.split('-').map(Number);
+                        const dayOfWeek = new Date(y, m - 1, d).getDay(); // 0 = Sun, 1 = Mon, etc.
+                        const dayAvailability = teacherSchedule[dayOfWeek];
+                        
+                        if (!dayAvailability || dayAvailability.active !== true) {
                             isAvailable = false;
                             break;
                         }
@@ -174,7 +195,7 @@ export const CourseList = () => {
             }
         }
         await loadData();
-        alert("Global allocation finished. Trainer availability was checked.");
+        alert("Global allocation finished. Trainer availability was fully checked.");
     } catch (e) {
         console.error("Global assignment error", e);
     } finally {
