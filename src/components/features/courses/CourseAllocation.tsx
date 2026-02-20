@@ -51,7 +51,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         setTeachers(tData);
         setSubjects(sData);
         setGlobalAllocations(aData);
-        setCurrentAllocations(aData.filter(a => a.instance_id === instance.id));
+        setCurrentAllocations(aData.filter((a: any) => a.instance_id === instance.id));
         setAllInstances(iData);
         setTemplate(templateData);
       } catch (error) {
@@ -140,13 +140,14 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
 
     try {
         const existingAlloc = currentAllocations.find(a => a.subject_id === selectedSubjectId);
+        
         const payload = {
-            id: existingAlloc?.id, 
             instance_id: instance.id,
             subject_id: selectedSubjectId,
             teacher_id: teacherId 
         };
 
+        // 1. Update UI Instantly
         const newAllocations = existingAlloc 
             ? currentAllocations.map(a => a.subject_id === selectedSubjectId ? { ...a, teacher_id: teacherId } : a)
             : [...currentAllocations, { ...payload, id: 'temp-' + Date.now() } as UnitAllocation];
@@ -159,13 +160,20 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         
         setGlobalAllocations(newGlobal.filter(a => a.teacher_id)); 
 
-        await ApiService.saveAllocation(payload);
-        
-        const updatedAlloc = await supabase.from('unit_allocations').select('*').eq('instance_id', instance.id);
-        if(updatedAlloc.data) setCurrentAllocations(updatedAlloc.data);
+        // 2. Safely Save to Database (Prevents the 409 Conflict)
+        if (existingAlloc && existingAlloc.id && !existingAlloc.id.toString().startsWith('temp')) {
+            // Force an UPDATE if we know the ID
+            await supabase.from('course_unit_allocations')
+                .update({ teacher_id: teacherId })
+                .eq('id', existingAlloc.id);
+        } else {
+            // INSERT if it truly doesn't exist
+            await supabase.from('course_unit_allocations').insert([payload]);
+        }
         
     } catch (e) {
-        alert("Assignment failed.");
+        console.error("Assignment error:", e);
+        alert("Assignment failed. Check console.");
     } finally {
         setProcessingSubjectId(null);
     }
@@ -178,7 +186,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     try {
       const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
       if (existingAlloc && existingAlloc.id) {
-        await supabase.from('unit_allocations').delete().eq('id', existingAlloc.id);
+        // Prevent deleting temp local IDs directly from the database
+        if (!existingAlloc.id.toString().startsWith('temp')) {
+            await supabase.from('course_unit_allocations').delete().eq('id', existingAlloc.id);
+        }
         
         setCurrentAllocations(prev => prev.filter(a => a.subject_id !== subjectId));
         setGlobalAllocations(prev => prev.filter(a => a.id !== existingAlloc.id));
@@ -194,7 +205,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       if (!confirm("Are you sure you want to clear ALL teacher assignments for this course?")) return;
       setLoading(true);
       try {
-          await supabase.from('unit_allocations').delete().eq('instance_id', instance.id);
+          await supabase.from('course_unit_allocations').delete().eq('instance_id', instance.id);
           setCurrentAllocations([]);
           setGlobalAllocations(prev => prev.filter(a => a.instance_id !== instance.id));
       } catch (e) {

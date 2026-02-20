@@ -152,6 +152,15 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
     e.preventDefault();
     setLoading(true);
     try {
+      // --- THE FIX: Get active user session to bypass the "user_id violates not-null" error ---
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+
+      const userId = authData.user?.id;
+      if (!userId && !(initialData as any)?.user_id) {
+          throw new Error("No active user session found. Please refresh and log in again.");
+      }
+
       // Clean up empty ranges before saving. If only one date is provided, mirror it.
       const cleanedBlackouts = formData.blackout_dates
         .filter(d => d.start.trim() !== '' || d.end.trim() !== '')
@@ -173,7 +182,9 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
           },
           // Include Leave & Blackouts in Payload
           leave_date: formData.leave_date || null,
-          blackout_dates: cleanedBlackouts
+          blackout_dates: cleanedBlackouts,
+          // Attach the User ID here!
+          user_id: (initialData as any)?.user_id || userId 
       };
 
       if (initialData) {
@@ -186,9 +197,9 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
         if (error) throw error;
       }
       onSuccess();
-    } catch (error) {
-      alert('Failed to save teacher. See console.');
-      console.error(error);
+    } catch (error: any) {
+      alert(`Failed to save: ${error.message || 'Check console.'}`);
+      console.error("Save Error:", error);
     } finally {
       setLoading(false);
     }
@@ -282,14 +293,14 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
 
             {/* Online Check */}
             <div>
-                 <label className="flex items-center gap-2 cursor-pointer">
+                 <label className="flex items-center gap-2 cursor-pointer w-fit">
                     <input 
                         type="checkbox"
                         checked={formData.trains_online}
                         onChange={e => setFormData({...formData, trains_online: e.target.checked})}
                         className="w-4 h-4 text-blue-600 rounded"
                     />
-                    <span className="text-sm text-slate-600">Online Only (Remote)</span>
+                    <span className="text-sm font-medium text-slate-600">Online Only (Remote Trainer)</span>
                  </label>
             </div>
 
@@ -348,6 +359,74 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
                 </div>
             )}
 
+            {/* --- UPGRADED: LEAVE & BLACKOUTS --- */}
+            <div className="border border-amber-200 rounded-xl p-5 bg-amber-50/50 space-y-6">
+                <label className="block text-sm font-bold text-amber-900 flex items-center gap-2 border-b border-amber-200 pb-3">
+                  <CalendarOff size={16} /> Leave & Holiday Exceptions
+                </label>
+                
+                {/* Specific Holidays First */}
+                <div>
+                    <label className="block text-xs font-bold text-amber-800 uppercase mb-3">Approved Leave / Holiday Ranges</label>
+                    <div className="space-y-3">
+                        {formData.blackout_dates.map((range, idx) => (
+                            <div key={idx} className="flex gap-3 items-center bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                                <div className="flex-1 flex items-center gap-3">
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Start Date</label>
+                                        <input 
+                                            type="date" 
+                                            className="w-full px-2 py-1.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
+                                            value={range.start} 
+                                            onChange={e => updateBlackoutDate(idx, 'start', e.target.value)} 
+                                        />
+                                    </div>
+                                    <span className="text-slate-300 mt-4 font-bold">to</span>
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">End Date</label>
+                                        <input 
+                                            type="date" 
+                                            className="w-full px-2 py-1.5 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
+                                            value={range.end} 
+                                            onChange={e => updateBlackoutDate(idx, 'end', e.target.value)} 
+                                        />
+                                    </div>
+                                </div>
+                                <button 
+                                    type="button" 
+                                    onClick={() => removeBlackoutDate(idx)}
+                                    className="mt-4 p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                    <button 
+                        type="button" 
+                        onClick={addBlackoutDate}
+                        className="mt-3 text-xs font-bold text-blue-600 flex items-center gap-1 hover:text-blue-800 transition-colors py-1.5 px-3 bg-blue-100/50 hover:bg-blue-100 rounded-lg"
+                    >
+                        <Plus size={14} /> Add Holiday Range
+                    </button>
+                </div>
+
+                <div className="w-full h-px bg-amber-200/50"></div>
+
+                {/* Resignation Second */}
+                <div className="bg-red-50 p-4 rounded-xl border border-red-100">
+                    <label className="block text-xs font-bold text-red-800 uppercase mb-1">Resignation / Last Day</label>
+                    <input 
+                        type="date" 
+                        className="w-1/2 px-3 py-2 border border-red-200 rounded-lg focus:ring-2 focus:ring-red-500 outline-none bg-white text-sm shadow-sm" 
+                        value={formData.leave_date} 
+                        onChange={e => setFormData({...formData, leave_date: e.target.value})} 
+                    />
+                    <p className="text-[10px] text-red-600 mt-2 font-medium">Auto-allocator will ignore this trainer on and after this date.</p>
+                </div>
+            </div>
+            {/* --- END UPGRADED --- */}
+
             {/* WEEKLY AVAILABILITY */}
             <div className="border border-slate-300 rounded-lg p-3 bg-slate-50">
                 <label className="block text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
@@ -392,73 +471,6 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
                   })}
                 </div>
             </div>
-
-            {/* --- UPGRADED: LEAVE & BLACKOUTS --- */}
-            <div className="border border-amber-200 rounded-lg p-4 bg-amber-50 space-y-4">
-                <label className="block text-sm font-bold text-amber-900 flex items-center gap-2 border-b border-amber-200 pb-2">
-                  <CalendarOff size={16} /> Leave & Holiday Exceptions
-                </label>
-                
-                {/* Specific Holidays First */}
-                <div>
-                    <label className="block text-xs font-bold text-amber-800 uppercase mb-2">Approved Leave / Holiday Ranges</label>
-                    <div className="space-y-3">
-                        {formData.blackout_dates.map((range, idx) => (
-                            <div key={idx} className="flex gap-2 items-center bg-white p-2 rounded-lg border border-slate-200">
-                                <div className="flex-1 flex items-center gap-2">
-                                    <div className="flex-1">
-                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Start Date</label>
-                                        <input 
-                                            type="date" 
-                                            className="w-full px-2 py-1 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
-                                            value={range.start} 
-                                            onChange={e => updateBlackoutDate(idx, 'start', e.target.value)} 
-                                        />
-                                    </div>
-                                    <span className="text-slate-300 mt-4 text-xs font-bold">to</span>
-                                    <div className="flex-1">
-                                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">End Date</label>
-                                        <input 
-                                            type="date" 
-                                            className="w-full px-2 py-1 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" 
-                                            value={range.end} 
-                                            onChange={e => updateBlackoutDate(idx, 'end', e.target.value)} 
-                                        />
-                                    </div>
-                                </div>
-                                <button 
-                                    type="button" 
-                                    onClick={() => removeBlackoutDate(idx)}
-                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100 mt-4"
-                                >
-                                    <Trash2 size={16} />
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                    <button 
-                        type="button" 
-                        onClick={addBlackoutDate}
-                        className="mt-2 text-xs font-bold text-blue-600 flex items-center gap-1 hover:text-blue-800 transition-colors py-1 px-2 bg-blue-100/50 hover:bg-blue-100 rounded-md"
-                    >
-                        <Plus size={14} /> Add Holiday Range
-                    </button>
-                </div>
-
-                {/* Resignation Second */}
-                <div className="bg-red-50 p-3 rounded-lg border border-red-100">
-                    <label className="block text-xs font-bold text-red-800 uppercase mb-1">Resignation / Last Day</label>
-                    <input 
-                        type="date" 
-                        className="w-full px-3 py-1.5 border border-red-200 rounded-lg focus:ring-2 focus:ring-red-500 outline-none bg-white text-sm" 
-                        value={formData.leave_date} 
-                        onChange={e => setFormData({...formData, leave_date: e.target.value})} 
-                    />
-                    <p className="text-[10px] text-red-600 mt-1 font-medium">Auto-allocator will ignore this trainer after this date.</p>
-                </div>
-            </div>
-            {/* --- END UPGRADED --- */}
-
             </form>
 
             {/* DANGER ZONE (Unchanged) */}
