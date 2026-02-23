@@ -75,9 +75,16 @@ export const TeacherList = () => {
               return item.user_id === user.id;
           };
 
+          // STRICT FIX: Allow global templates so the engine can see them
+          const isMineOrGlobal = (item: any) => {
+              if (!item.organization_id) return true; 
+              if (myOrgId) return item.organization_id === myOrgId;
+              return item.user_id === user.id;
+          };
+
           validTeachers = validTeachers.filter(isMine);
           filteredInstances = filteredInstances.filter(isMine);
-          filteredTemplates = filteredTemplates.filter(isMine);
+          filteredTemplates = filteredTemplates.filter(isMineOrGlobal);
       } else {
           validTeachers = [];
           filteredInstances = [];
@@ -94,6 +101,7 @@ export const TeacherList = () => {
           const temp = filteredTemplates.find(t => t.id === inst.template_id);
           if (!temp) return;
 
+          // STRICT FIX: Pass raw sData and yData to the engine so it doesn't skip subjects
           const courseEvents = generateAllEventsForInstance(inst, yData || [], temp as any, sData || [], validTeachers);
 
           courseEvents.forEach(ev => {
@@ -115,7 +123,8 @@ export const TeacherList = () => {
               const next = events[i+1];
               
               if (next.start.getTime() < current.end.getTime()) {
-                  const dateStr = current.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+                  // UTC Removed
+                  const dateStr = current.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
                   teacherClashes.push(`• ${current.summary} (${current.instanceName}) overlaps with ${next.summary} (${next.instanceName}) on ${dateStr}`);
               }
           }
@@ -150,9 +159,10 @@ export const TeacherList = () => {
       }
 
       const tableRowsHtml = events.map(ev => {
-          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-          const startTime = ev.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' });
-          const endTime = ev.end.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' });
+          // UTC Overrides Removed - strictly local Australian time
+          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+          const startTime = ev.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' });
+          const endTime = ev.end.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' });
           const location = ev.deliveryMode === 'Online' ? 'Online' : 'On Campus';
           
           return `<tr>
@@ -268,11 +278,12 @@ export const TeacherList = () => {
       
       events.forEach(ev => {
           const formatTime = (date: Date) => {
-              const y = date.getUTCFullYear();
-              const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-              const d = String(date.getUTCDate()).padStart(2, '0');
-              const h = String(date.getUTCHours()).padStart(2, '0');
-              const min = String(date.getUTCMinutes()).padStart(2, '0');
+              // UTC Overrides Removed - strictly local Australian time
+              const y = date.getFullYear();
+              const m = String(date.getMonth() + 1).padStart(2, '0');
+              const d = String(date.getDate()).padStart(2, '0');
+              const h = String(date.getHours()).padStart(2, '0');
+              const min = String(date.getMinutes()).padStart(2, '0');
               return `${y}${m}${d}T${h}${min}00`; 
           };
           
