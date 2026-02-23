@@ -60,7 +60,6 @@ export const CourseList = () => {
           let myOrgId = null;
           let role: 'admin' | 'teacher' = 'teacher';
 
-          // --- FETCH PROFILE FOR ROLE AND ORG ---
           try {
               const { data: profile, error } = await supabase
                   .from('user_profiles')
@@ -172,7 +171,7 @@ export const CourseList = () => {
                 proposedEvents.forEach(ev => {
                     let d = ev.start;
                     if (typeof d === 'string') d = new Date(d);
-                    requiredDays.add(d.getUTCDay());
+                    requiredDays.add(d.getDay()); // FIXED: Switched back to local getDay
                 });
                 
                 const candidates = [...teachers].sort(() => 0.5 - Math.random());
@@ -249,9 +248,14 @@ export const CourseList = () => {
       
       const rawEvents = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
       const filteredEvents = rawEvents.filter(ev => {
-          const iso = ev.start.toISOString().split('T')[0];
-          const isInTerm = terms.length === 0 || terms.some(t => iso >= t.start && iso <= t.end);
-          return isInTerm && !holidays.has(iso);
+          // FIXED: Build the YYYY-MM-DD string using LOCAL time, removing the UTC toISOString shift
+          const y = ev.start.getFullYear();
+          const m = String(ev.start.getMonth() + 1).padStart(2, '0');
+          const d = String(ev.start.getDate()).padStart(2, '0');
+          const localIso = `${y}-${m}-${d}`;
+
+          const isInTerm = terms.length === 0 || terms.some(t => localIso >= t.start && localIso <= t.end);
+          return isInTerm && !holidays.has(localIso);
       });
 
       const printWindow = window.open('', '', 'height=800,width=1000');
@@ -263,7 +267,8 @@ export const CourseList = () => {
       const tableRowsHtml = filteredEvents.map(ev => {
           const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
           const teacher = teachers.find(t => t.id === alloc?.teacher_id);
-          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+          // FIXED: Removed the timeZone: 'UTC' override here
+          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
           const teacherName = teacher?.name || '<span style="color:#94a3b8;font-style:italic;">Unassigned</span>';
           return `<tr><td><strong>${dateStr}</strong></td><td>${ev.summary}</td><td>${teacherName}</td></tr>`;
       }).join('');
