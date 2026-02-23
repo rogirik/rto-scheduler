@@ -54,16 +54,9 @@ export const CourseList = () => {
       let filteredYears = yearRes || [];
 
       if (user) {
-          let myOrgId = null;
-          try {
-              const { data: profile } = await supabase.from('profiles').select('organization_id').eq('id', user.id).single();
-              myOrgId = profile?.organization_id;
-          } catch (e) {}
-
-          if (!myOrgId) {
-              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
-              myOrgId = myKnownTeacher?.organization_id;
-          }
+          // STRIPPED OUT THE PROFILES QUERY TO FIX 404
+          const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
+          const myOrgId = myKnownTeacher?.organization_id;
 
           const isMine = (item: any) => {
               if (myOrgId) {
@@ -107,7 +100,6 @@ export const CourseList = () => {
     try {
         let localAllocations = [...allocations];
         
-        // 1. Generate ALL events globally to build a working schedule for Clash Detection
         const allGlobalEvents: any[] = [];
         instances.forEach(inst => {
             if (inst.status === 'completed') return;
@@ -117,7 +109,6 @@ export const CourseList = () => {
             allGlobalEvents.push(...evs.map(e => ({ ...e, instanceId: inst.id })));
         });
 
-        // Track live teacher schedules during the loop
         const liveTeacherSchedules: Record<string, any[]> = {};
         allGlobalEvents.forEach(ev => {
             const alloc = localAllocations.find(a => a.instance_id === ev.instanceId && a.subject_id === ev.subjectId);
@@ -151,7 +142,6 @@ export const CourseList = () => {
                 const subject = subjects.find(s => s.id === subId);
                 const subHours = subject?.hours || 20;
                 
-                // Get exactly when this subject runs
                 const proposedEvents = allGlobalEvents.filter(e => e.instanceId === instance.id && e.subjectId === subId);
                 const requiredDays = new Set<number>();
                 proposedEvents.forEach(ev => {
@@ -172,7 +162,6 @@ export const CourseList = () => {
                         
                     if (teacherLoad + subHours > (teacher.max_hours || 800)) continue;
 
-                    // Standard Day Availability
                     let isAvailable = true;
                     const daysToCheck = requiredDays.size > 0 ? Array.from(requiredDays) : (instance.allowed_days || [1, 2, 3, 4, 5]);
                     
@@ -185,7 +174,6 @@ export const CourseList = () => {
                     }
                     if (!isAvailable) continue;
 
-                    // CLASH DETECTION
                     let hasClash = false;
                     const existingEvents = liveTeacherSchedules[teacher.id] || [];
                     
@@ -213,7 +201,6 @@ export const CourseList = () => {
                     await ApiService.saveAllocation(newAlloc);
                     localAllocations.push(newAlloc as UnitAllocation);
 
-                    // Update live schedule to prevent double-booking next iteration
                     if (!liveTeacherSchedules[assignedTeacherId]) liveTeacherSchedules[assignedTeacherId] = [];
                     liveTeacherSchedules[assignedTeacherId].push(...proposedEvents);
                 }
@@ -227,21 +214,114 @@ export const CourseList = () => {
   const handleDownloadPDF = async (instance: CourseInstance) => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
+      
       const terms: any[] = [];
       const holidays = new Set<string>();
       academicYears.forEach(row => {
           if (Array.isArray(row.terms)) terms.push(...row.terms);
           if (Array.isArray(row.holidays)) row.holidays.forEach((h: any) => holidays.add(h.date || h));
       });
+      
       const rawEvents = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
       const filteredEvents = rawEvents.filter(ev => {
           const iso = ev.start.toISOString().split('T')[0];
           const isInTerm = terms.length === 0 || terms.some(t => iso >= t.start && iso <= t.end);
           return isInTerm && !holidays.has(iso);
       });
+
       const printWindow = window.open('', '', 'height=800,width=1000');
-      if (!printWindow) return;
-      printWindow.document.write(`<html><head><title>Schedule - ${instance.name}</title><style>body { font-family: sans-serif; padding: 40px; } table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; } th { background: #f8fafc; padding: 12px; text-align: left; border-bottom: 2px solid #e2e8f0; } td { padding: 12px; border-bottom: 1px solid #f1f5f9; }</style></head><body><h1>${instance.name} - Class Schedule</h1><table><thead><tr><th>Date</th><th>Unit</th><th>Trainer</th></tr></thead><tbody>${filteredEvents.map(ev => {const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);const teacher = teachers.find(t => t.id === alloc?.teacher_id);return `<tr><td>${ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</td><td>${ev.summary}</td><td>${teacher?.name || 'Unassigned'}</td></tr>`;}).join('')}</tbody></table><script>window.onload = () => window.print();</script></body></html>`);
+      if (!printWindow) {
+          alert("Popup blocked! Please allow popups for this site to view the schedule.");
+          return;
+      }
+
+      // FLATTENED HTML STRING GENERATION TO PREVENT VITE HMR 500 ERRORS
+      const tableRowsHtml = filteredEvents.map(ev => {
+          const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
+          const teacher = teachers.find(t => t.id === alloc?.teacher_id);
+          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+          const teacherName = teacher?.name || '<span style="color:#94a3b8;font-style:italic;">Unassigned</span>';
+          return `<tr><td><strong>${dateStr}</strong></td><td>${ev.summary}</td><td>${teacherName}</td></tr>`;
+      }).join('');
+
+      const cleanInstanceName = instance.name.replace(/[^a-zA-Z0-9]/g, '_');
+
+      const fullHtmlString = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Schedule - ${instance.name}</title>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #334155; }
+              #pdf-content { padding: 20px; background: white; }
+              table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+              th { background: #f8fafc; padding: 14px; text-align: left; border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; }
+              td { padding: 14px; border-bottom: 1px solid #f1f5f9; }
+              .controls { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin-bottom: 30px; display: flex; gap: 12px; align-items: center; }
+              button { padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: all 0.2s; }
+              .btn-print { background: #64748b; color: white; }
+              .btn-print:hover { background: #475569; }
+              .btn-pdf { background: #2563eb; color: white; }
+              .btn-pdf:hover { background: #1d4ed8; }
+              @media print {
+                .controls { display: none !important; }
+                body { padding: 0; }
+                #pdf-content { padding: 0; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="controls" data-html2canvas-ignore="true">
+              <button class="btn-pdf" onclick="downloadPDF()" id="pdfBtn">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                Download PDF
+              </button>
+              <button class="btn-print" onclick="window.print()">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"></path></svg>
+                Print
+              </button>
+            </div>
+            
+            <div id="pdf-content">
+                <h1 style="color: #0f172a; margin-bottom: 8px; font-size: 28px;">${instance.name}</h1>
+                <p style="color: #64748b; margin-top: 0; margin-bottom: 24px; font-size: 16px;">Class Schedule</p>
+                
+                <table>
+                  <thead><tr><th>Date</th><th>Unit</th><th>Trainer</th></tr></thead>
+                  <tbody>
+                    ${tableRowsHtml}
+                  </tbody>
+                </table>
+            </div>
+
+            <script>
+              function downloadPDF() {
+                  const btn = document.getElementById('pdfBtn');
+                  const originalText = btn.innerHTML;
+                  btn.innerHTML = 'Generating...';
+                  btn.disabled = true;
+
+                  var element = document.getElementById('pdf-content');
+                  var opt = {
+                      margin:       [15, 15, 15, 15],
+                      filename:     '${cleanInstanceName}_Schedule.pdf',
+                      image:        { type: 'jpeg', quality: 0.98 },
+                      html2canvas:  { scale: 2, useCORS: true },
+                      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                  };
+                  
+                  html2pdf().set(opt).from(element).save().then(() => {
+                      btn.innerHTML = originalText;
+                      btn.disabled = false;
+                  });
+              }
+            </script>
+          </body>
+        </html>
+      `;
+
+      printWindow.document.write(fullHtmlString);
       printWindow.document.close();
   };
 
@@ -322,10 +402,10 @@ export const CourseList = () => {
                   <td className="p-4 text-sm font-bold text-slate-700">{instance.start_date} to {instance.end_date}</td>
                   <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
-                          <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600"><FileText size={18} /></button>
-                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600"><Settings size={18} /></button>
+                          <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600" title="Print/Download Schedule"><FileText size={18} /></button>
+                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
                           <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
-                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600"><Trash2 size={18} /></button>
+                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
                       </div>
                     </td>
                 </tr>

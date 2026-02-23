@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
+import { supabase } from '../../../services/supabase';
 import type { Teacher, CourseInstance, UnitAllocation, Course, Subject, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
@@ -9,17 +10,19 @@ import {
   Edit2, 
   Trash2, 
   Loader2,
-  FileText, // For PDF
-  Calendar, // For iCal
-  Download
+  FileText, 
+  Calendar, 
+  Download,
+  AlertTriangle
 } from 'lucide-react';
 import { TeacherForm } from './TeacherForm';
 
 export const TeacherList = () => {
   const [loading, setLoading] = useState(true);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null); // Track which teacher is downloading
   
   const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [teacherSchedules, setTeacherSchedules] = useState<Record<string, any[]>>({});
+  const [clashes, setClashes] = useState<Record<string, string[]>>({});
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modal State
@@ -27,104 +30,177 @@ export const TeacherList = () => {
   const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
 
   useEffect(() => {
-    loadTeachers();
+    loadData();
   }, []);
 
-  const loadTeachers = async () => {
+  const loadData = async () => {
     try {
       setLoading(true);
-      const data = await ApiService.getTeachers();
-      setTeachers(data);
+      const { data: { user } } = await supabase.auth.getUser();
+
+      // Fetch all required global data for Clash Detection
+      const [tRes, aData, iData, tempData, sData, yData] = await Promise.all([
+        supabase.from('teachers').select('*'),
+        ApiService.getAllocationsGlobal(),
+        ApiService.getCourseInstances(),
+        ApiService.getAll<Course>('course_templates'),
+        ApiService.getSubjects(),
+        ApiService.getAll<AcademicYear>('academic_years')
+      ]);
+
+      let validTeachers = tRes.data || [];
+      let filteredInstances = iData || [];
+      let filteredTemplates = tempData || [];
+      
+      // Strict Organization Filter
+      if (user) {
+          const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
+          const myOrgId = myKnownTeacher?.organization_id;
+
+          const isMine = (item: any) => {
+              if (myOrgId) {
+                  if (item.organization_id) return item.organization_id === myOrgId;
+                  return item.user_id === user.id;
+              }
+              return item.user_id === user.id;
+          };
+
+          validTeachers = validTeachers.filter(isMine);
+          filteredInstances = filteredInstances.filter(isMine);
+          filteredTemplates = filteredTemplates.filter(isMine);
+      }
+
+      setTeachers(validTeachers);
+
+      // --- BUILD GLOBAL SCHEDULES & CLASH ADVISOR ---
+      const tSchedules: Record<string, any[]> = {};
+      validTeachers.forEach(t => tSchedules[t.id] = []);
+
+      filteredInstances.forEach(inst => {
+          if (inst.status === 'completed') return;
+          const temp = filteredTemplates.find(t => t.id === inst.template_id);
+          if (!temp) return;
+
+          const courseEvents = generateAllEventsForInstance(inst, yData || [], temp as any, sData || [], validTeachers);
+
+          courseEvents.forEach(ev => {
+              const alloc = (aData || []).find((a: any) => a.instance_id === inst.id && a.subject_id === ev.subjectId);
+              if (alloc && alloc.teacher_id && tSchedules[alloc.teacher_id]) {
+                  tSchedules[alloc.teacher_id].push({ ...ev, instanceName: inst.name });
+              }
+          });
+      });
+
+      const newClashes: Record<string, string[]> = {};
+
+      Object.keys(tSchedules).forEach(tId => {
+          // Sort timeline chronologically
+          const events = tSchedules[tId].sort((a, b) => a.start.getTime() - b.start.getTime());
+          const teacherClashes = [];
+          
+          // Check for overlapping events
+          for (let i = 0; i < events.length - 1; i++) {
+              const current = events[i];
+              const next = events[i+1];
+              
+              if (next.start.getTime() < current.end.getTime()) {
+                  const dateStr = current.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+                  teacherClashes.push(`• ${current.summary} (${current.instanceName}) overlaps with ${next.summary} (${next.instanceName}) on ${dateStr}`);
+              }
+          }
+
+          if (teacherClashes.length > 0) {
+              newClashes[tId] = teacherClashes;
+          }
+          tSchedules[tId] = events; // Save computed schedule
+      });
+
+      setTeacherSchedules(tSchedules);
+      setClashes(newClashes);
+
     } catch (error) {
-      console.error("Failed to load teachers", error);
+      console.error("Failed to load teachers and clashes", error);
     } finally {
       setLoading(false);
     }
   };
 
-  // --- HELPER: GENERATE SCHEDULE FOR ONE TEACHER ---
-  // This fetches all necessary data on-demand to avoid slowing down the initial page load
-  const fetchTeacherSchedule = async (teacherId: string) => {
-      // 1. Fetch all context data needed to calculate the schedule
-      const [allocations, instances, templates, subjects, academicYears] = await Promise.all([
-          ApiService.getAllocationsGlobal(),
-          ApiService.getCourseInstances(),
-          ApiService.getAll<Course>('course_templates'),
-          ApiService.getSubjects(),
-          ApiService.getAll<AcademicYear>('academic_years')
-      ]);
+  // --- ACTION: DOWNLOAD PDF (Native HTML2PDF) ---
+  const handleDownloadPDF = (teacher: Teacher) => {
+      const events = teacherSchedules[teacher.id] || [];
+      if (events.length === 0) {
+          alert(`No active classes found for ${teacher.name}.`);
+          return;
+      }
 
-      // 2. Filter allocations for this teacher
-      const myAllocations = allocations.filter(a => a.teacher_id === teacherId);
-      if (myAllocations.length === 0) return [];
+      const printWindow = window.open('', '', 'height=800,width=1000');
+      if (!printWindow) {
+          alert("Popup blocked! Please allow popups for this site to view the schedule.");
+          return;
+      }
 
-      // 3. Find which courses they are teaching in
-      const myInstanceIds = new Set(myAllocations.map(a => a.instance_id));
-      const myInstances = instances.filter(i => myInstanceIds.has(i.id));
+      const tableRowsHtml = events.map(ev => {
+          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+          const startTime = ev.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' });
+          const endTime = ev.end.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' });
+          const location = ev.deliveryMode === 'Online' ? 'Online' : 'On Campus';
+          
+          return `<tr>
+                    <td><strong>${dateStr}</strong></td>
+                    <td>${startTime} - ${endTime}</td>
+                    <td><strong>${ev.courseName}</strong></td>
+                    <td>${ev.summary}</td>
+                    <td>${location}</td>
+                  </tr>`;
+      }).join('');
 
-      let allEvents: any[] = [];
+      const cleanTeacherName = teacher.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const headerColor = teacher.color || '#3b82f6';
 
-      // 4. Generate events for each course
-      myInstances.forEach(instance => {
-          if (instance.status === 'completed') return;
-
-          const template = templates.find(t => t.id === instance.template_id);
-          if (!template) return;
-
-          // Generate ALL events for the course
-          const courseEvents = generateAllEventsForInstance(
-              instance,
-              academicYears,
-              template,
-              subjects,
-              teachers // Pass full teacher list for context if needed
-          );
-
-          // 5. FILTER: Keep only events where THIS teacher is assigned to the subject
-          const mySubjectsInThisCourse = new Set(
-              myAllocations
-                  .filter(a => a.instance_id === instance.id)
-                  .map(a => a.subject_id)
-          );
-
-          const myEvents = courseEvents.filter(ev => mySubjectsInThisCourse.has(ev.subjectId));
-          allEvents = [...allEvents, ...myEvents];
-      });
-
-      // 6. Sort by Date
-      return allEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
-  };
-
-  // --- ACTION: DOWNLOAD PDF ---
-  const handleDownloadPDF = async (teacher: Teacher) => {
-      setDownloadingId(teacher.id);
-      try {
-          const events = await fetchTeacherSchedule(teacher.id);
-          if (events.length === 0) {
-              alert(`No active classes found for ${teacher.name}.`);
-              return;
-          }
-
-          const printWindow = window.open('', '', 'height=800,width=800');
-          if (!printWindow) return;
-
-          printWindow.document.write(`
-            <html>
-              <head>
-                <title>Schedule - ${teacher.name}</title>
-                <style>
-                  body { font-family: 'Segoe UI', sans-serif; padding: 40px; color: #1e293b; }
-                  h1 { color: #0f172a; margin-bottom: 5px; font-size: 24px; }
-                  .meta { color: #64748b; margin-bottom: 30px; font-size: 14px; }
-                  table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
-                  th { background-color: ${teacher.color || '#3b82f6'}; color: white; padding: 12px 15px; text-align: left; }
-                  td { border-bottom: 1px solid #e2e8f0; padding: 12px 15px; }
-                  tr:nth-child(even) { background-color: #f8fafc; }
-                </style>
-              </head>
-              <body>
+      const fullHtmlString = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Schedule - ${teacher.name}</title>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #334155; }
+              #pdf-content { padding: 20px; background: white; }
+              h1 { color: #0f172a; margin-bottom: 5px; font-size: 28px; }
+              .meta { color: #64748b; margin-bottom: 30px; font-size: 14px; }
+              table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+              th { background: ${headerColor}; color: white; padding: 14px; text-align: left; border-radius: 4px 4px 0 0; }
+              td { padding: 14px; border-bottom: 1px solid #f1f5f9; }
+              tr:nth-child(even) td { background-color: #f8fafc; }
+              .controls { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin-bottom: 30px; display: flex; gap: 12px; align-items: center; }
+              button { padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: all 0.2s; }
+              .btn-print { background: #64748b; color: white; }
+              .btn-print:hover { background: #475569; }
+              .btn-pdf { background: #2563eb; color: white; }
+              .btn-pdf:hover { background: #1d4ed8; }
+              @media print {
+                .controls { display: none !important; }
+                body { padding: 0; }
+                #pdf-content { padding: 0; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="controls" data-html2canvas-ignore="true">
+              <button class="btn-pdf" onclick="downloadPDF()" id="pdfBtn">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                Download PDF
+              </button>
+              <button class="btn-print" onclick="window.print()">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"></path></svg>
+                Print
+              </button>
+            </div>
+            
+            <div id="pdf-content">
                 <h1>${teacher.name}</h1>
-                <div class="meta">Generated on ${new Date().toLocaleDateString()}</div>
+                <div class="meta">Schedule generated on ${new Date().toLocaleDateString()}</div>
+                
                 <table>
                   <thead>
                     <tr>
@@ -136,75 +212,81 @@ export const TeacherList = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    ${events.map(ev => `
-                      <tr>
-                        <td>${ev.start.toLocaleDateString([], {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'})}</td>
-                        <td>${ev.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - ${ev.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</td>
-                        <td><strong>${ev.courseName}</strong></td>
-                        <td>${ev.summary}</td>
-                        <td>${ev.deliveryMode === 'Online' ? 'Online' : 'Room 101'}</td>
-                      </tr>
-                    `).join('')}
+                    ${tableRowsHtml}
                   </tbody>
                 </table>
-                <script>window.onload = function() { window.print(); }</script>
-              </body>
-            </html>
-          `);
-          printWindow.document.close();
+            </div>
 
-      } catch (e) {
-          console.error(e);
-          alert("Failed to generate PDF.");
-      } finally {
-          setDownloadingId(null);
-      }
+            <script>
+              function downloadPDF() {
+                  const btn = document.getElementById('pdfBtn');
+                  const originalText = btn.innerHTML;
+                  btn.innerHTML = 'Generating...';
+                  btn.disabled = true;
+
+                  var element = document.getElementById('pdf-content');
+                  var opt = {
+                      margin:       [15, 15, 15, 15],
+                      filename:     '${cleanTeacherName}_Schedule.pdf',
+                      image:        { type: 'jpeg', quality: 0.98 },
+                      html2canvas:  { scale: 2, useCORS: true },
+                      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                  };
+                  
+                  html2pdf().set(opt).from(element).save().then(() => {
+                      btn.innerHTML = originalText;
+                      btn.disabled = false;
+                  });
+              }
+            </script>
+          </body>
+        </html>
+      `;
+
+      printWindow.document.write(fullHtmlString);
+      printWindow.document.close();
   };
 
   // --- ACTION: DOWNLOAD iCAL (.ics) ---
-  const handleDownloadICS = async (teacher: Teacher) => {
-      setDownloadingId(teacher.id);
-      try {
-          const events = await fetchTeacherSchedule(teacher.id);
-          if (events.length === 0) {
-              alert(`No active classes found for ${teacher.name}.`);
-              return;
-          }
-
-          // Generate iCalendar format
-          let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//AcademicScheduler//TeacherCalendar//EN\n";
-          
-          events.forEach(ev => {
-              // Format dates to YYYYMMDDTHHmmSS (Local Time)
-              const formatTime = (date: Date) => date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-              
-              icsContent += "BEGIN:VEVENT\n";
-              icsContent += `SUMMARY:${ev.summary} (${ev.courseName})\n`;
-              icsContent += `DTSTART:${formatTime(ev.start)}\n`;
-              icsContent += `DTEND:${formatTime(ev.end)}\n`;
-              icsContent += `DESCRIPTION:Cohort: ${ev.courseName}\\nSubject: ${ev.summary}\n`;
-              icsContent += `LOCATION:${ev.deliveryMode === 'Online' ? 'Online' : 'Room 101'}\n`;
-              icsContent += "END:VEVENT\n";
-          });
-
-          icsContent += "END:VCALENDAR";
-
-          // Trigger Download
-          const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.setAttribute("download", `${teacher.name.replace(/\s+/g, '_')}_Schedule.ics`);
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-
-      } catch (e) {
-          console.error(e);
-          alert("Failed to generate iCal file.");
-      } finally {
-          setDownloadingId(null);
+  const handleDownloadICS = (teacher: Teacher) => {
+      const events = teacherSchedules[teacher.id] || [];
+      if (events.length === 0) {
+          alert(`No active classes found for ${teacher.name}.`);
+          return;
       }
+
+      let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//AcademicScheduler//TeacherCalendar//EN\n";
+      
+      events.forEach(ev => {
+          // Floating Time format to respect exact UTC values
+          const formatTime = (date: Date) => {
+              const y = date.getUTCFullYear();
+              const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+              const d = String(date.getUTCDate()).padStart(2, '0');
+              const h = String(date.getUTCHours()).padStart(2, '0');
+              const min = String(date.getUTCMinutes()).padStart(2, '0');
+              return `${y}${m}${d}T${h}${min}00`; 
+          };
+          
+          icsContent += "BEGIN:VEVENT\n";
+          icsContent += `SUMMARY:${ev.summary} (${ev.courseName})\n`;
+          icsContent += `DTSTART:${formatTime(ev.start)}\n`;
+          icsContent += `DTEND:${formatTime(ev.end)}\n`;
+          icsContent += `DESCRIPTION:Cohort: ${ev.courseName}\\nSubject: ${ev.summary}\n`;
+          icsContent += `LOCATION:${ev.deliveryMode === 'Online' ? 'Online' : 'On Campus'}\n`;
+          icsContent += "END:VEVENT\n";
+      });
+
+      icsContent += "END:VCALENDAR";
+
+      const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `${teacher.name.replace(/\s+/g, '_')}_Schedule.ics`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
   };
 
   const handleEdit = (teacher: Teacher) => {
@@ -221,7 +303,7 @@ export const TeacherList = () => {
     if (!confirm("Are you sure you want to delete this teacher?")) return;
     try {
       await ApiService.deleteTeacher(id);
-      loadTeachers();
+      loadData();
     } catch (error) {
       alert("Failed to delete teacher.");
     }
@@ -237,7 +319,7 @@ export const TeacherList = () => {
     t.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  if (loading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" /></div>;
+  if (loading) return <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" size={40} /></div>;
 
   return (
     <div className="p-8 space-y-6 bg-slate-50 min-h-screen">
@@ -272,7 +354,7 @@ export const TeacherList = () => {
       {/* Grid / List */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredTeachers.map(teacher => (
-            <div key={teacher.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow flex flex-col gap-4 relative group">
+            <div key={teacher.id} className={`bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition-all flex flex-col gap-4 relative group ${clashes[teacher.id] ? 'border-red-300 shadow-red-50' : 'border-slate-200'}`}>
                 
                 {/* Card Header */}
                 <div className="flex justify-between items-start">
@@ -283,9 +365,20 @@ export const TeacherList = () => {
                         >
                             {teacher.name.charAt(0)}
                         </div>
-                        <div>
+                        <div className="flex flex-col">
                             <div className="font-bold text-slate-800">{teacher.name}</div>
                             <div className="text-xs font-bold text-slate-400 uppercase">{teacher.employment_type || 'Casual'}</div>
+                            
+                            {/* --- CLASH ADVISOR BADGE --- */}
+                            {clashes[teacher.id] && (
+                                <button 
+                                    onClick={() => alert(`⚠️ Clashes detected for ${teacher.name}:\n\n` + clashes[teacher.id].join('\n\n'))}
+                                    className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-600 text-[10px] font-bold border border-red-200 hover:bg-red-100 transition-colors w-fit"
+                                    title="Click to view clash details"
+                                >
+                                    <AlertTriangle size={12} /> {clashes[teacher.id].length} Clash{clashes[teacher.id].length !== 1 ? 'es' : ''}
+                                </button>
+                            )}
                         </div>
                     </div>
                     <button 
@@ -297,7 +390,7 @@ export const TeacherList = () => {
                 </div>
 
                 {/* Details */}
-                <div className="space-y-2 text-sm text-slate-600">
+                <div className="space-y-2 text-sm text-slate-600 mt-2">
                     <div className="flex items-center gap-2">
                         <Mail size={16} className="text-slate-400" />
                         {teacher.email}
@@ -317,25 +410,21 @@ export const TeacherList = () => {
                     </span>
 
                     <div className="flex items-center gap-1">
-                        {/* --- NEW EXPORT BUTTONS --- */}
                         <button 
                             onClick={() => handleDownloadPDF(teacher)}
-                            disabled={downloadingId === teacher.id}
                             className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                             title="Print Schedule PDF"
                         >
-                            {downloadingId === teacher.id ? <Loader2 className="animate-spin" size={16}/> : <FileText size={16} />}
+                            <FileText size={16} />
                         </button>
                         
                         <button 
                             onClick={() => handleDownloadICS(teacher)}
-                            disabled={downloadingId === teacher.id}
                             className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
                             title="Download iCal"
                         >
                             <Download size={16} />
                         </button>
-                        {/* ------------------------- */}
                         
                         <div className="w-px h-4 bg-slate-200 mx-1"></div>
 
@@ -357,14 +446,13 @@ export const TeacherList = () => {
         )}
       </div>
 
-      {/* --- MODAL RENDERING --- */}
       {isFormOpen && (
         <TeacherForm 
             initialData={selectedTeacher}
             onClose={handleCloseForm}
             onSuccess={() => {
                 handleCloseForm();
-                loadTeachers();
+                loadData();
             }}
         />
       )}
