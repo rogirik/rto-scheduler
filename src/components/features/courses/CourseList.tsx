@@ -4,18 +4,8 @@ import { supabase } from '../../../services/supabase';
 import type { CourseInstance, Course, UnitAllocation, Teacher, Subject, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
-  Plus, 
-  Search, 
-  FileText, 
-  Settings, 
-  Loader2, 
-  Trash2, 
-  CheckCircle2, 
-  ShieldAlert, 
-  BookOpen, 
-  X, 
-  Edit2, 
-  AlertTriangle 
+  Plus, Search, FileText, Settings, Loader2, Trash2, 
+  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Wand2, Lock
 } from 'lucide-react';
 import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
@@ -49,43 +39,52 @@ export const CourseList = () => {
     try {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
-      
-      // 1. Fetch using ApiService to avoid 404/400 table errors
-      const [iData, tData, aData, subData, yearData, teachRes] = await Promise.all([
+
+      const [iRes, tRes, aRes, teachRes, subRes, yearRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getAllocationsGlobal(),
+        supabase.from('teachers').select('*'), // Fetch raw to prevent 400 errors
         ApiService.getSubjects(),
-        ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('teachers').select('*') 
+        ApiService.getAll<AcademicYear>('academic_years')
       ]);
 
-      let filteredInstances = iData || [];
-      let filteredTemplates = tData || [];
-      let filteredAllocations = aData || [];
+      let filteredInstances = iRes || [];
+      let filteredTemplates = tRes || [];
+      let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
-      let filteredSubjects = subData || [];
-      let filteredYears = yearData || [];
-      
-      if (user) {
-          // Find a teacher you definitely created to determine your Organization ID
-          const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
-          const myOrgId = myKnownTeacher?.organization_id;
+      let filteredSubjects = subRes || [];
+      let filteredYears = yearRes || [];
 
-          // Universal Filter: Keep records that share your Org ID, or that you created directly
+      // --- ADDED: STRICT ORGANIZATION FILTER ---
+      if (user) {
+          let myOrgId = null;
+          try {
+              const { data: profile } = await supabase.from('profiles').select('organization_id').eq('id', user.id).single();
+              myOrgId = profile?.organization_id;
+          } catch (e) {
+              // Ignore missing profile
+          }
+
+          if (!myOrgId) {
+              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
+              myOrgId = myKnownTeacher?.organization_id;
+          }
+
           const isMine = (item: any) => {
-              if (myOrgId && item.organization_id === myOrgId) return true;
+              if (myOrgId) {
+                  if (item.organization_id) return item.organization_id === myOrgId;
+                  return item.user_id === user.id;
+              }
               return item.user_id === user.id;
           };
 
-          // Scrub the leaked data across all lists
           filteredInstances = filteredInstances.filter(isMine);
           filteredTemplates = filteredTemplates.filter(isMine);
           filteredTeachers = filteredTeachers.filter(isMine);
           filteredSubjects = filteredSubjects.filter(isMine);
           filteredYears = filteredYears.filter(isMine);
 
-          // Allocations might not have a user_id, so we only keep allocations linked to YOUR cohorts
           const validInstanceIds = new Set(filteredInstances.map(i => i.id));
           filteredAllocations = filteredAllocations.filter(a => validInstanceIds.has(a.instance_id));
       }
@@ -96,7 +95,6 @@ export const CourseList = () => {
       setTeachers(filteredTeachers); 
       setSubjects(filteredSubjects);
       setAcademicYears(filteredYears);
-
     } catch (error) {
       console.error("Dashboard Load Error:", error);
     } finally {
@@ -118,37 +116,101 @@ export const CourseList = () => {
     try {
         let localAllocations = [...allocations];
         const terms: any[] = [];
-        academicYears.forEach(row => { if (Array.isArray(row.terms)) terms.push(...row.terms); });
+        const globalHolidays = new Set<string>();
+        
+        academicYears.forEach(row => { 
+            if (Array.isArray(row.terms)) terms.push(...row.terms); 
+            if (Array.isArray(row.holidays)) row.holidays.forEach((h: any) => globalHolidays.add(h.date || h));
+        });
 
         for (const instance of instances) {
+            if (instance.status === 'completed') continue;
+            
             const template = templates.find(t => t.id === instance.template_id);
             if (!template) continue;
+            
             const rawSeq = (template as any).sequenced_subjects || [];
             const requiredIds = rawSeq.map((item: any) => typeof item === 'string' ? item : item.id).filter(Boolean);
             const missingIds = requiredIds.filter(id => !localAllocations.find(a => a.instance_id === instance.id && a.subject_id === id));
 
+            if (missingIds.length === 0) continue;
+
+            // Generate class dates to check against teacher availability schedules
+            const rawEvents = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
+            const filteredEvents = rawEvents.filter(ev => {
+                const iso = ev.start.toISOString().split('T')[0];
+                const isInTerm = terms.length === 0 || terms.some(t => iso >= t.start && iso <= t.end);
+                return isInTerm && !globalHolidays.has(iso);
+            });
+
+            const subjectDates: Record<string, string[]> = {};
+            filteredEvents.forEach(ev => {
+                const iso = ev.start.toISOString().split('T')[0];
+                if (!subjectDates[ev.subjectId]) subjectDates[ev.subjectId] = [];
+                subjectDates[ev.subjectId].push(iso);
+            });
+
             for (const subId of missingIds) {
+                const subject = subjects.find(s => s.id === subId);
+                const subHours = subject?.hours || 20;
+                
                 const candidates = [...teachers].sort(() => 0.5 - Math.random());
-                if (candidates.length > 0) {
+                let assignedTeacherId = null;
+                
+                for (const teacher of candidates) {
+                    // 1. DELIVERY MODE CHECK: Stop online-only teachers from face-to-face classes
+                    if (teacher.trains_online && instance.delivery_mode !== 'Online') continue;
+
+                    // 2. LOAD BALANCING CHECK: Stop teachers from exceeding max annual hours
+                    const teacherLoad = localAllocations
+                        .filter(a => a.teacher_id === teacher.id)
+                        .reduce((sum, a) => {
+                            const s = subjects.find(sub => sub.id === a.subject_id);
+                            return sum + (s?.hours || 0);
+                        }, 0);
+                        
+                    if (teacherLoad + subHours > (teacher.max_hours || 800)) continue;
+
+                    // 3. AVAILABILITY CHECK: Ensure they actually work on the generated class days
+                    let isAvailable = true;
+                    const requiredDates = subjectDates[subId] || [];
+                    for (const classDate of requiredDates) {
+                        const [y, m, d] = classDate.split('-').map(Number);
+                        const dayOfWeek = new Date(y, m - 1, d).getDay();
+                        const teacherSchedule = (teacher.availability as any)?.schedule || {};
+                        
+                        if (teacherSchedule[dayOfWeek] && !teacherSchedule[dayOfWeek].active) { 
+                            isAvailable = false; 
+                            break; 
+                        }
+                    }
+
+                    if (isAvailable) { 
+                        assignedTeacherId = teacher.id; 
+                        break; 
+                    }
+                }
+
+                if (assignedTeacherId) {
                     const newAlloc = { 
                         instance_id: instance.id, 
                         subject_id: subId, 
-                        teacher_id: candidates[0].id
+                        teacher_id: assignedTeacherId
                     };
-                    
                     await ApiService.saveAllocation(newAlloc);
                     localAllocations.push(newAlloc as UnitAllocation);
                 }
             }
         }
         await loadData();
+        alert("Safe global allocation finished.");
     } catch (e) { console.error(e); } finally { setProcessing(false); }
   };
 
   const handleDownloadPDF = async (instance: CourseInstance) => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
-      
+
       const terms: any[] = [];
       const holidays = new Set<string>();
       academicYears.forEach(row => {
@@ -165,18 +227,49 @@ export const CourseList = () => {
 
       const printWindow = window.open('', '', 'height=800,width=1000');
       if (!printWindow) return;
-      printWindow.document.write(`<html><head><title>Schedule</title><style>body{font-family:sans-serif;padding:40px;}table{width:100%;border-collapse:collapse;}th{background:#f8fafc;padding:12px;text-align:left;}td{padding:12px;border-bottom:1px solid #eee;}</style></head><body><h1>${instance.name}</h1><table><thead><tr><th>Date</th><th>Unit</th><th>Trainer</th></tr></thead><tbody>\${filteredEvents.map(ev => {const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);const teacher = teachers.find(t => t.id === alloc?.teacher_id);return \`<tr><td>\${ev.start.toLocaleDateString('en-AU')}</td><td>\${ev.summary}</td><td>\${teacher?.name || 'Unassigned'}</td></tr>\`;}).join('')}</tbody></table></body></html>`);
+
+      printWindow.document.write(`
+        <html>
+          <head><title>Schedule - ${instance.name}</title>
+          <style>
+            body { font-family: sans-serif; padding: 40px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+            th { background: #f8fafc; padding: 12px; text-align: left; border-bottom: 2px solid #e2e8f0; }
+            td { padding: 12px; border-bottom: 1px solid #f1f5f9; }
+          </style></head>
+          <body>
+            <h1>${instance.name} - Class Schedule</h1>
+            <table>
+              <thead><tr><th>Date</th><th>Unit</th><th>Trainer</th></tr></thead>
+              <tbody>
+                ${filteredEvents.map(ev => {
+                    const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
+                    const teacher = teachers.find(t => t.id === alloc?.teacher_id);
+                    return `<tr><td>${ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>${ev.summary}</td><td>${teacher?.name || 'Unassigned'}</td></tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+            <script>window.onload = () => window.print();</script>
+          </body>
+        </html>
+      `);
       printWindow.document.close();
-      printWindow.print();
   };
 
-  const getUnassignedCount = (instance: CourseInstance) => {
+  // --- ADDED: STATS HELPER FOR BADGES ---
+  const getInstanceStats = (instance: CourseInstance) => {
     const template = templates.find(t => t.id === instance.template_id);
-    if (!template) return 0;
+    if (!template) return { total: 0, assigned: 0 };
+    
     const rawSeq = (template as any).sequenced_subjects || [];
     const requiredIds = rawSeq.map((item: any) => typeof item === 'string' ? item : item.id).filter(Boolean);
-    const assignedIds = new Set(allocations.filter(a => a.instance_id === instance.id && a.teacher_id).map(a => a.subject_id));
-    return requiredIds.filter((id: string) => !assignedIds.has(id)).length;
+    const total = requiredIds.length;
+    
+    const assignedCount = requiredIds.filter((id: string) => 
+        allocations.some(a => a.instance_id === instance.id && a.subject_id === id && a.teacher_id)
+    ).length;
+
+    return { total, assigned: assignedCount };
   };
 
   const filteredInstances = instances.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -222,21 +315,42 @@ export const CourseList = () => {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredInstances.map(instance => (
-              <tr key={instance.id} className="hover:bg-slate-50 transition-all">
-                <td className="p-4 font-bold text-slate-800">{instance.name}</td>
-                <td className="p-4 text-sm text-slate-600">{templates.find(t => t.id === instance.template_id)?.name}</td>
-                <td className="p-4 text-sm font-bold text-slate-700">{instance.start_date} to {instance.end_date}</td>
-                <td className="p-4 text-right">
-                    <div className="flex justify-end gap-2">
-                        <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600"><FileText size={18} /></button>
-                        <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600"><Settings size={18} /></button>
-                        <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
-                        <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600"><Trash2 size={18} /></button>
+            {filteredInstances.map(instance => {
+              // --- ADDED: CALCULATION FOR BADGES ---
+              const stats = getInstanceStats(instance);
+              const isFullyAllocated = stats.total > 0 && stats.assigned === stats.total;
+
+              return (
+                <tr key={instance.id} className="hover:bg-slate-50 transition-all">
+                  <td className="p-4">
+                    <div className="font-bold text-slate-800 text-lg">{instance.name}</div>
+                    
+                    {/* --- ADDED: ALLOCATION BADGES --- */}
+                    <div className="mt-1">
+                        {isFullyAllocated ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-100">
+                                <CheckCircle2 size={10}/> Allocated: {stats.assigned}/{stats.total}
+                            </span>
+                        ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-bold border border-amber-100">
+                                <AlertTriangle size={10}/> Pending: {stats.assigned}/{stats.total}
+                            </span>
+                        )}
                     </div>
                   </td>
-              </tr>
-            ))}
+                  <td className="p-4 text-sm text-slate-600">{templates.find(t => t.id === instance.template_id)?.name}</td>
+                  <td className="p-4 text-sm font-bold text-slate-700">{instance.start_date} to {instance.end_date}</td>
+                  <td className="p-4 text-right">
+                      <div className="flex justify-end gap-2">
+                          <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600"><FileText size={18} /></button>
+                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600"><Settings size={18} /></button>
+                          <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
+                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600"><Trash2 size={18} /></button>
+                      </div>
+                    </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

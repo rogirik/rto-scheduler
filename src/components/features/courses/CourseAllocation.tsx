@@ -40,15 +40,30 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [tData, sData, aData, templateData, iData] = await Promise.all([
-          ApiService.getTeachers(),
+        const { data: { user } } = await supabase.auth.getUser();
+
+        // 1. Fetch Data
+        const [tRes, sData, aData, templateData, iData] = await Promise.all([
+          supabase.from('teachers').select('*'), // Fetch raw to filter manually
           ApiService.getSubjects(),
           ApiService.getAllocationsGlobal(),
           ApiService.getById<Course>('course_templates', instance.template_id),
           ApiService.getCourseInstances()
         ]);
         
-        setTeachers(tData);
+        // 2. Filter Ghost Teachers (Organization Security)
+        let validTeachers = tRes.data || [];
+        if (user) {
+            const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
+            const myOrgId = myKnownTeacher?.organization_id;
+
+            validTeachers = validTeachers.filter(t => {
+                if (myOrgId && t.organization_id === myOrgId) return true;
+                return t.user_id === user.id;
+            });
+        }
+
+        setTeachers(validTeachers);
         setSubjects(sData);
         setGlobalAllocations(aData);
         setCurrentAllocations(aData.filter((a: any) => a.instance_id === instance.id));
@@ -81,9 +96,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       const warnings: string[] = [];
       let isCritical = false;
 
-      // 1. ONLINE CHECK
+      // 1. ONLINE CHECK (Critical)
       if (teacher.trains_online && instance.delivery_mode !== 'Online') {
           warnings.push("Online Only (Incompatible Mode)");
+          isCritical = true;
       }
 
       // 2. LOAD CHECKS
@@ -95,9 +111,11 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           const sub = subjects.find(s => s.id === alloc.subject_id);
           if (sub) currentAnnualLoad += (sub.hours || 0);
       });
+      // Add current subject if not already assigned
       if (!teacherAllocations.some(a => a.instance_id === instance.id && a.subject_id === subject.id)) {
           currentAnnualLoad += (subject.hours || 0);
       }
+      
       if (currentAnnualLoad > (teacher.max_hours || 800)) {
           warnings.push(`Over Annual Cap (${currentAnnualLoad}/${teacher.max_hours || 800}h)`);
           isCritical = true;
@@ -136,6 +154,15 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   // Actions
   const handleAssign = async (teacherId: string) => {
     if (!selectedSubjectId) return;
+    
+    // --- SAFETY CHECK START ---
+    const status = getTeacherStatus(teacherId, selectedSubjectId);
+    if (status?.isCritical) {
+        const confirmMsg = `CRITICAL WARNING: This assignment violates rules:\n\n- ${status.warnings.join('\n- ')}\n\nAre you sure you want to force this assignment?`;
+        if (!confirm(confirmMsg)) return;
+    }
+    // --- SAFETY CHECK END ---
+
     setProcessingSubjectId(selectedSubjectId);
 
     try {
@@ -160,14 +187,12 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         
         setGlobalAllocations(newGlobal.filter(a => a.teacher_id)); 
 
-        // 2. Safely Save to Database (Prevents the 409 Conflict)
+        // 2. Safely Save to Database
         if (existingAlloc && existingAlloc.id && !existingAlloc.id.toString().startsWith('temp')) {
-            // Force an UPDATE if we know the ID
-            await supabase.from('course_unit_allocations')
+            await supabase.from('course_unit_allocations') // Kept your table name
                 .update({ teacher_id: teacherId })
                 .eq('id', existingAlloc.id);
         } else {
-            // INSERT if it truly doesn't exist
             await supabase.from('course_unit_allocations').insert([payload]);
         }
         
@@ -186,7 +211,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     try {
       const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
       if (existingAlloc && existingAlloc.id) {
-        // Prevent deleting temp local IDs directly from the database
         if (!existingAlloc.id.toString().startsWith('temp')) {
             await supabase.from('course_unit_allocations').delete().eq('id', existingAlloc.id);
         }
@@ -417,17 +441,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                                         )}
                                     </div>
                                 </div>
-
-                                {!isAssignedToSelected && selectedSubjectId && (
-                                    <div className="opacity-0 group-hover:opacity-100 text-blue-500 font-bold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center gap-1">
-                                        Assign <ArrowRight size={14} />
-                                    </div>
-                                )}
-                                {isAssignedToSelected && (
-                                    <div className="text-white font-bold flex items-center gap-1 pr-2">
-                                        <CheckCircle2 size={18} /> Assigned
-                                    </div>
-                                )}
                             </button>
                         );
                     })}
