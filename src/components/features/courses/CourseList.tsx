@@ -15,7 +15,6 @@ export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   
-  // --- ROLE STATE ---
   const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
   
   const [instances, setInstances] = useState<CourseInstance[]>([]);
@@ -53,27 +52,23 @@ export const CourseList = () => {
       let filteredTemplates = tRes || [];
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
-      let filteredSubjects = subRes || [];
-      let filteredYears = yearRes || [];
 
       if (user) {
           let myOrgId = null;
           let role: 'admin' | 'teacher' = 'teacher';
 
           try {
-              const { data: profile, error } = await supabase
+              const { data: profile } = await supabase
                   .from('user_profiles')
                   .select('organization_id, role')
                   .eq('id', user.id)
                   .single();
                   
-              if (profile && !error) {
+              if (profile) {
                   myOrgId = profile.organization_id;
                   if (profile.role === 'admin') role = 'admin';
               }
-          } catch (e) {
-              console.log("No profile found or table missing. Defaulting to read-only teacher.");
-          }
+          } catch (e) {}
 
           if (!myOrgId) {
               const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
@@ -90,11 +85,15 @@ export const CourseList = () => {
               return item.user_id === user.id;
           };
 
+          const isMineOrGlobal = (item: any) => {
+              if (!item.organization_id) return true; // Allows old subjects to be seen by the engine
+              if (myOrgId) return item.organization_id === myOrgId;
+              return item.user_id === user.id;
+          };
+
           filteredInstances = filteredInstances.filter(isMine);
-          filteredTemplates = filteredTemplates.filter(isMine);
           filteredTeachers = filteredTeachers.filter(isMine);
-          filteredSubjects = filteredSubjects.filter(isMine);
-          filteredYears = filteredYears.filter(isMine);
+          filteredTemplates = filteredTemplates.filter(isMineOrGlobal);
 
           const validInstanceIds = new Set(filteredInstances.map(i => i.id));
           filteredAllocations = filteredAllocations.filter(a => validInstanceIds.has(a.instance_id));
@@ -104,8 +103,9 @@ export const CourseList = () => {
       setTemplates(filteredTemplates);
       setAllocations(filteredAllocations);
       setTeachers(filteredTeachers); 
-      setSubjects(filteredSubjects);
-      setAcademicYears(filteredYears);
+      // STRICT FIX: Supply the engine with ALL subjects and years so dates don't skip!
+      setSubjects(subRes || []);
+      setAcademicYears(yearRes || []);
     } catch (error) {
       console.error("Dashboard Load Error:", error);
     } finally {
@@ -171,7 +171,7 @@ export const CourseList = () => {
                 proposedEvents.forEach(ev => {
                     let d = ev.start;
                     if (typeof d === 'string') d = new Date(d);
-                    requiredDays.add(d.getDay()); // FIXED: Switched back to local getDay
+                    requiredDays.add(d.getDay()); 
                 });
                 
                 const candidates = [...teachers].sort(() => 0.5 - Math.random());
@@ -239,24 +239,7 @@ export const CourseList = () => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
       
-      const terms: any[] = [];
-      const holidays = new Set<string>();
-      academicYears.forEach(row => {
-          if (Array.isArray(row.terms)) terms.push(...row.terms);
-          if (Array.isArray(row.holidays)) row.holidays.forEach((h: any) => holidays.add(h.date || h));
-      });
-      
-      const rawEvents = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
-      const filteredEvents = rawEvents.filter(ev => {
-          // FIXED: Build the YYYY-MM-DD string using LOCAL time, removing the UTC toISOString shift
-          const y = ev.start.getFullYear();
-          const m = String(ev.start.getMonth() + 1).padStart(2, '0');
-          const d = String(ev.start.getDate()).padStart(2, '0');
-          const localIso = `${y}-${m}-${d}`;
-
-          const isInTerm = terms.length === 0 || terms.some(t => localIso >= t.start && localIso <= t.end);
-          return isInTerm && !holidays.has(localIso);
-      });
+      const events = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
 
       const printWindow = window.open('', '', 'height=800,width=1000');
       if (!printWindow) {
@@ -264,10 +247,10 @@ export const CourseList = () => {
           return;
       }
 
-      const tableRowsHtml = filteredEvents.map(ev => {
+      const tableRowsHtml = events.map(ev => {
           const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
           const teacher = teachers.find(t => t.id === alloc?.teacher_id);
-          // FIXED: Removed the timeZone: 'UTC' override here
+          // Pure local time rendering - no timezone shifting
           const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
           const teacherName = teacher?.name || '<span style="color:#94a3b8;font-style:italic;">Unassigned</span>';
           return `<tr><td><strong>${dateStr}</strong></td><td>${ev.summary}</td><td>${teacherName}</td></tr>`;
