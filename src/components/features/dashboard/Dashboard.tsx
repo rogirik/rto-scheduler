@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
-import { generateAllEventsForInstance } from '../../../utils/scheduler'; // Uses your original App.jsx logic
+import { supabase } from '../../../services/supabase';
+import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import type { Teacher, Course, Subject, AcademicYear } from '../../../services/api';
 import { Users, GraduationCap, Calendar, TrendingUp, Loader2, AlertCircle, CheckCircle2, MoreHorizontal } from 'lucide-react';
 
 export const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
   
   const [stats, setStats] = useState({
     activeCohorts: 0,
@@ -26,69 +29,109 @@ export const Dashboard = () => {
   const loadData = async () => {
     try {
       setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
       
-      // 1. Fetch ALL Data needed for the calculation engine
-      const [instances, teachers, allocations, templates, subjects, academicYears] = await Promise.all([
+      const [iRes, tRes, aRes, tempRes, subRes, yRes] = await Promise.all([
         ApiService.getCourseInstances(),
-        ApiService.getTeachers(),
+        supabase.from('teachers').select('*'), 
         ApiService.getAllocationsGlobal(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getSubjects(),
         ApiService.getAll<AcademicYear>('academic_years')
       ]);
 
-      // 2. Filter Active Instances
+      let instances = iRes || [];
+      let teachers = tRes.data || [];
+      let allocations = aRes || [];
+      let templates = tempRes || [];
+      let subjects = subRes || [];
+      let academicYears = yRes || [];
+
+      let myOrgId = null;
+      let role: 'admin' | 'teacher' = 'teacher';
+
+      if (user) {
+          try {
+              // --- STRICTLY LOOKING AT user_profiles ---
+              const { data: profile } = await supabase
+                  .from('user_profiles')
+                  .select('organization_id, role')
+                  .eq('id', user.id)
+                  .single();
+                  
+              if (profile) {
+                  myOrgId = profile.organization_id;
+                  if (profile.role === 'admin') role = 'admin';
+              }
+          } catch (e) {}
+
+          if (!myOrgId) {
+              const myKnownTeacher = teachers.find(t => t.user_id === user.id && t.organization_id);
+              myOrgId = myKnownTeacher?.organization_id;
+          }
+
+          setUserRole(role);
+
+          const isMine = (item: any) => {
+              if (myOrgId) {
+                  if (item.organization_id) return item.organization_id === myOrgId;
+                  return item.user_id === user.id;
+              }
+              return item.user_id === user.id;
+          };
+
+          instances = instances.filter(isMine);
+          teachers = teachers.filter(isMine);
+          templates = templates.filter(isMine);
+          subjects = subjects.filter(isMine);
+          academicYears = academicYears.filter(isMine);
+
+          const validInstanceIds = new Set(instances.map(i => i.id));
+          allocations = allocations.filter(a => validInstanceIds.has(a.instance_id));
+      }
+
       const activeInstances = instances.filter(i => i.status !== 'completed');
       
-      // 3. THE "APP.JSX" LOGIC: Calculate Workload based on REAL CALENDAR EVENTS
-      // We assume the current academic year (e.g., 2025) for the dashboard view
-      const currentYear = new Date().getFullYear();
+      const currentYear = new Date().getUTCFullYear(); 
       const teacherHoursMap: Record<string, number> = {};
 
-      // Initialize map
       teachers.forEach(t => teacherHoursMap[t.id] = 0);
 
-      // Loop through every active course to generate its calendar
       activeInstances.forEach(instance => {
         const template = templates.find(t => t.id === instance.template_id);
         
         if (template) {
-            // A. Generate the specific dates and hours for this course
-            // This uses the engine from your original App.jsx (restored in scheduler.ts)
             const events = generateAllEventsForInstance(
                 instance,
                 academicYears,
-                template,
+                template as any,
                 subjects,
                 teachers
             );
 
-            // B. Filter events for the CURRENT YEAR only (so we don't count 2026 work in 2025 capacity)
-            const currentYearEvents = events.filter(e => new Date(e.start).getFullYear() === currentYear);
+            const currentYearEvents = events.filter(e => {
+                const d = typeof e.start === 'string' ? new Date(e.start) : e.start;
+                return d.getUTCFullYear() === currentYear;
+            });
 
-            // C. Assign hours to the correct teacher
             currentYearEvents.forEach(event => {
-                // Find who is teaching this specific unit in this specific instance
-                const allocation = allocations.find(a => 
+                const allocation = allocations.find((a: any) => 
                     a.instance_id === instance.id && a.subject_id === event.subjectId
                 );
 
                 if (allocation && allocation.teacher_id) {
-                    // Add the specific hours of this session (e.g., 6 hours) to the teacher's total
                     if (teacherHoursMap[allocation.teacher_id] !== undefined) {
-                        teacherHoursMap[allocation.teacher_id] += (event.hours || 0);
+                        teacherHoursMap[allocation.teacher_id] += (event.hours || event.baseHours || 0);
                     }
                 }
             });
         }
       });
 
-      // 4. Build Workload Data for Display
-      const workload = teachers.map(teacher => {
+      let workload = teachers.map(teacher => {
         const allocatedHours = Math.round(teacherHoursMap[teacher.id] || 0);
-        const maxHours = teacher.max_hours || 800; // This comes from Settings/Teacher Profile
+        const maxHours = teacher.max_hours || 800; 
         
-        // Calculate Percentage (Cap at 100% for bar visualization if needed, or allow overflow)
         const capacityMetric = maxHours > 0 ? (allocatedHours / maxHours) * 100 : 0;
 
         return {
@@ -99,22 +142,25 @@ export const Dashboard = () => {
         };
       });
 
-      // Sort by busiest
       workload.sort((a, b) => b.capacityMetric - a.capacityMetric);
+
+      if (role === 'teacher' && user) {
+          workload = workload.filter(w => w.user_id === user.id);
+      }
+
       setTrainerWorkload(workload);
 
-      // 5. Calculate General Stats
-      const assignedUnits = allocations.filter(a => activeInstances.some(i => i.id === a.instance_id)).length;
+      const assignedUnits = allocations.filter((a: any) => activeInstances.some(i => i.id === a.instance_id)).length;
       
       let totalUnitsRequired = 0;
       activeInstances.forEach(instance => {
         const template = templates.find(t => t.id === instance.template_id);
-        if (template && template.sequenced_subjects) {
-          totalUnitsRequired += template.sequenced_subjects.length;
+        if (template && (template as any).sequenced_subjects) {
+          totalUnitsRequired += (template as any).sequenced_subjects.length;
         }
       });
 
-      const uniqueTeachersAllocated = new Set(allocations.map(a => a.teacher_id)).size;
+      const uniqueTeachersAllocated = new Set(allocations.map((a: any) => a.teacher_id)).size;
 
       setStats({
         activeCohorts: activeInstances.length,
@@ -139,7 +185,9 @@ export const Dashboard = () => {
   return (
     <div className="p-8 space-y-8 h-full overflow-y-auto">
       <div>
-        <h1 className="text-2xl font-bold text-slate-800">RTO Overview</h1>
+        <h1 className="text-2xl font-bold text-slate-800">
+          {userRole === 'admin' ? 'RTO Overview' : 'Dashboard Overview'}
+        </h1>
         <p className="text-slate-500">Academic resource allocation and delivery status.</p>
       </div>
 
@@ -218,10 +266,12 @@ export const Dashboard = () => {
           </div>
         </div>
 
-        {/* WORKLOAD (REAL CALCULATED HOURS VS AWARD) */}
+        {/* WORKLOAD */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-[320px]">
             <div className="flex justify-between items-center mb-6">
-                <h3 className="font-bold text-slate-800">Trainer Workload</h3>
+                <h3 className="font-bold text-slate-800">
+                    {userRole === 'admin' ? 'Trainer Workload' : 'Your Workload'}
+                </h3>
                 <button className="text-slate-400 hover:text-slate-600"><MoreHorizontal size={20} /></button>
             </div>
             <div className="flex-1 overflow-y-auto pr-2 space-y-4">
@@ -233,7 +283,6 @@ export const Dashboard = () => {
                                 <div className="flex justify-between items-center mb-1">
                                     <span className="text-sm font-bold text-slate-700">{trainer.name}</span>
                                     <span className="text-xs font-medium text-slate-500">
-                                        {/* Display REAL Calculated Hours vs Award Limit */}
                                         {trainer.allocatedHours} / {trainer.maxHours} hrs
                                     </span>
                                 </div>

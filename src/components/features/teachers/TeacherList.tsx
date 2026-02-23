@@ -4,28 +4,20 @@ import { supabase } from '../../../services/supabase';
 import type { Teacher, CourseInstance, UnitAllocation, Course, Subject, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
-  Plus, 
-  Search, 
-  Mail, 
-  Edit2, 
-  Trash2, 
-  Loader2,
-  FileText, 
-  Calendar, 
-  Download,
-  AlertTriangle
+  Plus, Search, Mail, Edit2, Trash2, Loader2, FileText, Calendar, Download, AlertTriangle
 } from 'lucide-react';
 import { TeacherForm } from './TeacherForm';
 
 export const TeacherList = () => {
   const [loading, setLoading] = useState(true);
   
+  const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
+
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [teacherSchedules, setTeacherSchedules] = useState<Record<string, any[]>>({});
   const [clashes, setClashes] = useState<Record<string, string[]>>({});
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Modal State
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
 
@@ -38,7 +30,6 @@ export const TeacherList = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
 
-      // Fetch all required global data for Clash Detection
       const [tRes, aData, iData, tempData, sData, yData] = await Promise.all([
         supabase.from('teachers').select('*'),
         ApiService.getAllocationsGlobal(),
@@ -52,10 +43,29 @@ export const TeacherList = () => {
       let filteredInstances = iData || [];
       let filteredTemplates = tempData || [];
       
-      // Strict Organization Filter
       if (user) {
-          const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
-          const myOrgId = myKnownTeacher?.organization_id;
+          let myOrgId = null;
+          let role: 'admin' | 'teacher' = 'teacher';
+
+          try {
+              const { data: profile, error } = await supabase
+                  .from('user_profiles')
+                  .select('organization_id, role')
+                  .eq('id', user.id)
+                  .single();
+                  
+              if (profile && !error) {
+                  myOrgId = profile.organization_id;
+                  if (profile.role === 'admin') role = 'admin';
+              }
+          } catch (e) {}
+
+          if (!myOrgId) {
+              const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
+              myOrgId = myKnownTeacher?.organization_id;
+          }
+
+          setUserRole(role);
 
           const isMine = (item: any) => {
               if (myOrgId) {
@@ -68,11 +78,14 @@ export const TeacherList = () => {
           validTeachers = validTeachers.filter(isMine);
           filteredInstances = filteredInstances.filter(isMine);
           filteredTemplates = filteredTemplates.filter(isMine);
+      } else {
+          validTeachers = [];
+          filteredInstances = [];
+          filteredTemplates = [];
       }
 
       setTeachers(validTeachers);
 
-      // --- BUILD GLOBAL SCHEDULES & CLASH ADVISOR ---
       const tSchedules: Record<string, any[]> = {};
       validTeachers.forEach(t => tSchedules[t.id] = []);
 
@@ -94,11 +107,9 @@ export const TeacherList = () => {
       const newClashes: Record<string, string[]> = {};
 
       Object.keys(tSchedules).forEach(tId => {
-          // Sort timeline chronologically
           const events = tSchedules[tId].sort((a, b) => a.start.getTime() - b.start.getTime());
           const teacherClashes = [];
           
-          // Check for overlapping events
           for (let i = 0; i < events.length - 1; i++) {
               const current = events[i];
               const next = events[i+1];
@@ -112,7 +123,7 @@ export const TeacherList = () => {
           if (teacherClashes.length > 0) {
               newClashes[tId] = teacherClashes;
           }
-          tSchedules[tId] = events; // Save computed schedule
+          tSchedules[tId] = events; 
       });
 
       setTeacherSchedules(tSchedules);
@@ -125,7 +136,6 @@ export const TeacherList = () => {
     }
   };
 
-  // --- ACTION: DOWNLOAD PDF (Native HTML2PDF) ---
   const handleDownloadPDF = (teacher: Teacher) => {
       const events = teacherSchedules[teacher.id] || [];
       if (events.length === 0) {
@@ -247,7 +257,6 @@ export const TeacherList = () => {
       printWindow.document.close();
   };
 
-  // --- ACTION: DOWNLOAD iCAL (.ics) ---
   const handleDownloadICS = (teacher: Teacher) => {
       const events = teacherSchedules[teacher.id] || [];
       if (events.length === 0) {
@@ -258,7 +267,6 @@ export const TeacherList = () => {
       let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//AcademicScheduler//TeacherCalendar//EN\n";
       
       events.forEach(ev => {
-          // Floating Time format to respect exact UTC values
           const formatTime = (date: Date) => {
               const y = date.getUTCFullYear();
               const m = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -328,14 +336,19 @@ export const TeacherList = () => {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Staff Management</h1>
-          <p className="text-slate-500">Manage teachers, availability, and employment details.</p>
+          <p className="text-slate-500">
+             {userRole === 'admin' ? 'Manage teachers, availability, and employment details.' : 'View staff roster and download schedules.'}
+          </p>
         </div>
-        <button 
-          onClick={handleAdd}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-blue-700 shadow-sm"
-        >
-          <Plus size={18} /> Add Teacher
-        </button>
+        
+        {userRole === 'admin' && (
+            <button 
+              onClick={handleAdd}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-blue-700 shadow-sm"
+            >
+              <Plus size={18} /> Add Teacher
+            </button>
+        )}
       </div>
 
       {/* Search */}
@@ -369,7 +382,6 @@ export const TeacherList = () => {
                             <div className="font-bold text-slate-800">{teacher.name}</div>
                             <div className="text-xs font-bold text-slate-400 uppercase">{teacher.employment_type || 'Casual'}</div>
                             
-                            {/* --- CLASH ADVISOR BADGE --- */}
                             {clashes[teacher.id] && (
                                 <button 
                                     onClick={() => alert(`⚠️ Clashes detected for ${teacher.name}:\n\n` + clashes[teacher.id].join('\n\n'))}
@@ -381,12 +393,15 @@ export const TeacherList = () => {
                             )}
                         </div>
                     </div>
-                    <button 
-                        onClick={() => handleEdit(teacher)}
-                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
-                    >
-                        <Edit2 size={18} />
-                    </button>
+                    
+                    {userRole === 'admin' && (
+                        <button 
+                            onClick={() => handleEdit(teacher)}
+                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                        >
+                            <Edit2 size={18} />
+                        </button>
+                    )}
                 </div>
 
                 {/* Details */}
@@ -426,14 +441,17 @@ export const TeacherList = () => {
                             <Download size={16} />
                         </button>
                         
-                        <div className="w-px h-4 bg-slate-200 mx-1"></div>
-
-                        <button 
-                            onClick={() => handleDelete(teacher.id)}
-                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-                        >
-                            <Trash2 size={16} />
-                        </button>
+                        {userRole === 'admin' && (
+                            <>
+                                <div className="w-px h-4 bg-slate-200 mx-1"></div>
+                                <button 
+                                    onClick={() => handleDelete(teacher.id)}
+                                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
@@ -446,7 +464,7 @@ export const TeacherList = () => {
         )}
       </div>
 
-      {isFormOpen && (
+      {isFormOpen && userRole === 'admin' && (
         <TeacherForm 
             initialData={selectedTeacher}
             onClose={handleCloseForm}

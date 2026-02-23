@@ -53,8 +53,22 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         let validTeachers = tRes.data || [];
         
         if (user) {
-            const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
-            myOrgId = myKnownTeacher?.organization_id;
+            // --- FIXED: Looking at user_profiles instead of profiles ---
+            try {
+                const { data: profile } = await supabase
+                    .from('user_profiles')
+                    .select('organization_id')
+                    .eq('id', user.id)
+                    .single();
+                if (profile) myOrgId = profile.organization_id;
+            } catch (e) {
+                // Ignore missing profile
+            }
+
+            if (!myOrgId) {
+                const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
+                myOrgId = myKnownTeacher?.organization_id;
+            }
 
             const isMine = (item: any) => {
                 if (myOrgId && item.organization_id) return item.organization_id === myOrgId;

@@ -15,6 +15,9 @@ export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   
+  // --- ROLE STATE ---
+  const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
+  
   const [instances, setInstances] = useState<CourseInstance[]>([]);
   const [templates, setTemplates] = useState<Course[]>([]);
   const [allocations, setAllocations] = useState<UnitAllocation[]>([]);
@@ -54,9 +57,31 @@ export const CourseList = () => {
       let filteredYears = yearRes || [];
 
       if (user) {
-          // STRIPPED OUT THE PROFILES QUERY TO FIX 404
-          const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
-          const myOrgId = myKnownTeacher?.organization_id;
+          let myOrgId = null;
+          let role: 'admin' | 'teacher' = 'teacher';
+
+          // --- FETCH PROFILE FOR ROLE AND ORG ---
+          try {
+              const { data: profile, error } = await supabase
+                  .from('user_profiles')
+                  .select('organization_id, role')
+                  .eq('id', user.id)
+                  .single();
+                  
+              if (profile && !error) {
+                  myOrgId = profile.organization_id;
+                  if (profile.role === 'admin') role = 'admin';
+              }
+          } catch (e) {
+              console.log("No profile found or table missing. Defaulting to read-only teacher.");
+          }
+
+          if (!myOrgId) {
+              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
+              myOrgId = myKnownTeacher?.organization_id;
+          }
+
+          setUserRole(role);
 
           const isMine = (item: any) => {
               if (myOrgId) {
@@ -235,7 +260,6 @@ export const CourseList = () => {
           return;
       }
 
-      // FLATTENED HTML STRING GENERATION TO PREVENT VITE HMR 500 ERRORS
       const tableRowsHtml = filteredEvents.map(ev => {
           const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
           const teacher = teachers.find(t => t.id === alloc?.teacher_id);
@@ -344,20 +368,26 @@ export const CourseList = () => {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Scheduled Courses</h1>
-          <p className="text-sm text-slate-500">Manage your active cohorts and schedule dates.</p>
+          <p className="text-sm text-slate-500">
+            {userRole === 'admin' 
+              ? 'Manage your active cohorts and schedule dates.' 
+              : 'View your scheduled cohorts and class dates.'}
+          </p>
         </div>
         
-        <div className="flex gap-3">
-            <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
-                {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
-            </button>
-            <button onClick={() => setShowTemplateManager(true)} className="bg-white border px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50">
-                <BookOpen size={18} /> Qualifications
-            </button>
-            <button onClick={() => { setSelectedInstance(null); setShowScheduleModal(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-blue-700">
-                <Plus size={18} /> New Cohort
-            </button>
-        </div>
+        {userRole === 'admin' && (
+          <div className="flex gap-3">
+              <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
+                  {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
+              </button>
+              <button onClick={() => setShowTemplateManager(true)} className="bg-white border px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50">
+                  <BookOpen size={18} /> Qualifications
+              </button>
+              <button onClick={() => { setSelectedInstance(null); setShowScheduleModal(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-blue-700">
+                  <Plus size={18} /> New Cohort
+              </button>
+          </div>
+        )}
       </div>
 
       <div className="bg-white p-4 rounded-xl shadow-sm border flex items-center gap-4">
@@ -403,9 +433,14 @@ export const CourseList = () => {
                   <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
                           <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600" title="Print/Download Schedule"><FileText size={18} /></button>
-                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
-                          <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
-                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
+                          
+                          {userRole === 'admin' && (
+                              <>
+                                <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
+                                <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
+                                <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
+                              </>
+                          )}
                       </div>
                     </td>
                 </tr>
@@ -415,13 +450,14 @@ export const CourseList = () => {
         </table>
       </div>
 
-      {showScheduleModal && (
+      {showScheduleModal && userRole === 'admin' && (
         <ScheduleCourseForm initialData={selectedInstance} onClose={() => setShowScheduleModal(false)} onSuccess={() => { setShowScheduleModal(false); loadData(); }} />
       )}
-      {showAllocator && (
+      {showAllocator && userRole === 'admin' && (
         <CourseAllocation instance={showAllocator} onClose={() => setShowAllocator(null)} onUpdate={() => loadData()} />
       )}
-      {showTemplateManager && !showCourseForm && (
+      
+      {showTemplateManager && userRole === 'admin' && !showCourseForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh]">
                 <div className="px-6 py-4 border-b flex justify-between items-center bg-slate-50">
@@ -443,7 +479,7 @@ export const CourseList = () => {
             </div>
         </div>
       )}
-      {showCourseForm && (
+      {showCourseForm && userRole === 'admin' && (
           <CourseForm initialData={editingTemplate} onClose={() => setShowCourseForm(false)} onSuccess={() => { setShowCourseForm(false); loadData(); }} />
       )}
     </div>
