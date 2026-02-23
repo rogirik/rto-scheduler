@@ -44,6 +44,7 @@ export const Dashboard = () => {
       let teachers = tRes.data || [];
       let allocations = aRes || [];
       let templates = tempRes || [];
+      // Do not strict filter reference data initially to protect calculation engine
       let subjects = subRes || [];
       let academicYears = yRes || [];
 
@@ -52,7 +53,6 @@ export const Dashboard = () => {
 
       if (user) {
           try {
-              // --- STRICTLY LOOKING AT user_profiles ---
               const { data: profile } = await supabase
                   .from('user_profiles')
                   .select('organization_id, role')
@@ -80,11 +80,15 @@ export const Dashboard = () => {
               return item.user_id === user.id;
           };
 
+          const isMineOrGlobal = (item: any) => {
+              if (!item.organization_id) return true; 
+              if (myOrgId) return item.organization_id === myOrgId;
+              return item.user_id === user.id;
+          };
+
           instances = instances.filter(isMine);
           teachers = teachers.filter(isMine);
-          templates = templates.filter(isMine);
-          subjects = subjects.filter(isMine);
-          academicYears = academicYears.filter(isMine);
+          templates = templates.filter(isMineOrGlobal);
 
           const validInstanceIds = new Set(instances.map(i => i.id));
           allocations = allocations.filter(a => validInstanceIds.has(a.instance_id));
@@ -92,7 +96,7 @@ export const Dashboard = () => {
 
       const activeInstances = instances.filter(i => i.status !== 'completed');
       
-      const currentYear = new Date().getUTCFullYear(); 
+      const currentYear = new Date().getFullYear(); 
       const teacherHoursMap: Record<string, number> = {};
 
       teachers.forEach(t => teacherHoursMap[t.id] = 0);
@@ -111,7 +115,7 @@ export const Dashboard = () => {
 
             const currentYearEvents = events.filter(e => {
                 const d = typeof e.start === 'string' ? new Date(e.start) : e.start;
-                return d.getUTCFullYear() === currentYear;
+                return d.getFullYear() === currentYear;
             });
 
             currentYearEvents.forEach(event => {
