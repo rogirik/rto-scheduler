@@ -7,13 +7,21 @@ import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+// HELPER: Safely generate a YYYY-MM-DD string in LOCAL time to prevent 11-hour UTC shifts
+const getLocalIsoString = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 export const CalendarView = () => {
   const [loading, setLoading] = useState(true);
   
-  // Use UTC for the current view state
+  // FIX: Using strictly local time for the current view state
   const [currentDate, setCurrentDate] = useState(() => { 
       const now = new Date(); 
-      return new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)); 
+      return new Date(now.getFullYear(), now.getMonth(), 1); 
   });
   
   const [events, setEvents] = useState<any[]>([]);
@@ -39,31 +47,49 @@ export const CalendarView = () => {
         ApiService.getSubjects(),
         ApiService.getAll('academic_years'),
         ApiService.getAllocationsGlobal(),
-        supabase.from('teachers').select('*') // Raw fetch for org filtering
+        supabase.from('teachers').select('*') 
       ]);
 
       let filteredInstances = iRes || [];
       let filteredTemplates = tRes || [];
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
+      // Do not strict filter reference data to protect calculation engine
       let filteredSubjects = subRes || [];
       let filteredYears = yearRes || [];
 
-      // --- ORGANIZATION FILTER (Kills Ghost Courses) ---
       if (user) {
-          const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
-          const myOrgId = myKnownTeacher?.organization_id;
+          let myOrgId = null;
+          try {
+              const { data: profile } = await supabase
+                  .from('user_profiles')
+                  .select('organization_id')
+                  .eq('id', user.id)
+                  .single();
+              if (profile) myOrgId = profile.organization_id;
+          } catch(e) {}
+
+          if (!myOrgId) {
+              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
+              myOrgId = myKnownTeacher?.organization_id;
+          }
 
           const isMine = (item: any) => {
               if (myOrgId && item.organization_id === myOrgId) return true;
               return item.user_id === user.id;
           };
 
+          const isMineOrGlobal = (item: any) => {
+              if (!item.organization_id) return true; 
+              if (myOrgId) return item.organization_id === myOrgId;
+              return item.user_id === user.id;
+          };
+
           filteredInstances = filteredInstances.filter(isMine);
-          filteredTemplates = filteredTemplates.filter(isMine);
           filteredTeachers = filteredTeachers.filter(isMine);
-          filteredSubjects = filteredSubjects.filter(isMine);
-          filteredYears = filteredYears.filter(isMine);
+          
+          // FIX: Allow global templates so the engine can see them
+          filteredTemplates = filteredTemplates.filter(isMineOrGlobal);
           
           const validInstanceIds = new Set(filteredInstances.map(i => i.id));
           filteredAllocations = filteredAllocations.filter(a => validInstanceIds.has(a.instance_id));
@@ -80,6 +106,7 @@ export const CalendarView = () => {
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
+            // FIX: Pass ALL subjects and years so clusters don't skip
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
                 filteredYears as any[], 
@@ -94,19 +121,19 @@ export const CalendarView = () => {
                 );
                 const teacher = filteredTeachers.find((t: any) => t.id === allocation?.teacher_id);
                 
-                // --- STRICT UTC MAPPING ---
+                // --- FIX: LOCAL TIME MAPPING ONLY ---
                 const originalDate = new Date(ev.start);
-                const year = originalDate.getUTCFullYear();
-                const month = originalDate.getUTCMonth();
-                const day = originalDate.getUTCDate();
+                const year = originalDate.getFullYear();
+                const month = originalDate.getMonth();
+                const day = originalDate.getDate();
 
                 const [startH, startM] = (instance.start_time || "09:00").split(':').map(Number);
-                const fixedStart = new Date(Date.UTC(year, month, day, startH, startM));
+                const fixedStart = new Date(year, month, day, startH, startM);
 
                 const duration = instance.hours_per_day || 7;
                 const fixedEnd = new Date(fixedStart);
-                fixedEnd.setUTCHours(fixedStart.getUTCHours() + Math.floor(duration));
-                fixedEnd.setUTCMinutes(fixedStart.getUTCMinutes() + (duration % 1 * 60));
+                fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration));
+                fixedEnd.setMinutes(fixedStart.getMinutes() + (duration % 1 * 60));
 
                 return {
                     ...ev,
@@ -118,7 +145,7 @@ export const CalendarView = () => {
                     teacherEmail: teacher?.email,
                     location: instance.delivery_mode === 'Online' ? 'Online' : 'On Campus',
                     isUnassigned: !teacher,
-                    uniqueKey: `${instance.id}|${fixedStart.toISOString().split('T')[0]}|${teacher?.id || 'unassigned'}|${ev.summary}` 
+                    uniqueKey: `${instance.id}|${getLocalIsoString(fixedStart)}|${teacher?.id || 'unassigned'}|${ev.summary}` 
                 };
             });
 
@@ -171,10 +198,10 @@ export const CalendarView = () => {
             currentGroup = { ...ev, endDate: ev.start, key: evKey };
         } else {
             const prevDate = new Date(currentGroup.endDate);
-            prevDate.setUTCDate(prevDate.getUTCDate() + 1); 
+            prevDate.setDate(prevDate.getDate() + 1); 
             
-            const isNextDay = ev.start.toISOString().split('T')[0] === prevDate.toISOString().split('T')[0];
-            const isMondayAfterFriday = (currentGroup.endDate.getUTCDay() === 5 && ev.start.getUTCDay() === 1 && (ev.start.getTime() - currentGroup.endDate.getTime()) < 345600000); 
+            const isNextDay = getLocalIsoString(ev.start) === getLocalIsoString(prevDate);
+            const isMondayAfterFriday = (currentGroup.endDate.getDay() === 5 && ev.start.getDay() === 1 && (ev.start.getTime() - currentGroup.endDate.getTime()) < 345600000); 
 
             if (evKey === currentGroup.key && (isNextDay || isMondayAfterFriday)) {
                 currentGroup.endDate = ev.start; 
@@ -196,14 +223,14 @@ export const CalendarView = () => {
     const headers = ["Date Range", "Start Time", "End Time", "Subject", "Teacher", "Cohort"];
     
     const rows = mergedList.map(ev => {
-        const dateStr = ev.start.toISOString().split('T')[0] === ev.endDate.toISOString().split('T')[0]
-            ? ev.start.toLocaleDateString('en-GB', { timeZone: 'UTC' })
-            : `${ev.start.toLocaleDateString('en-GB', { timeZone: 'UTC' })} - ${ev.endDate.toLocaleDateString('en-GB', { timeZone: 'UTC' })}`;
+        const dateStr = getLocalIsoString(ev.start) === getLocalIsoString(ev.endDate)
+            ? ev.start.toLocaleDateString('en-GB')
+            : `${ev.start.toLocaleDateString('en-GB')} - ${ev.endDate.toLocaleDateString('en-GB')}`;
 
         return [
             `"${dateStr}"`,
-            ev.start.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' }),
-            ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit', timeZone: 'UTC' }),
+            ev.start.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }),
+            ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }),
             `"${ev.summary}"`,
             `"${ev.teacherName}"`,
             `"${ev.courseName}"`
@@ -230,11 +257,11 @@ export const CalendarView = () => {
     const printWindow = window.open('', '', 'height=600,width=800');
     if (!printWindow) return;
 
-    const pYear = currentDate.getUTCFullYear();
-    const pMonth = currentDate.getUTCMonth();
-    const pFirstDay = new Date(Date.UTC(pYear, pMonth, 1)).getUTCDay();
+    const pYear = currentDate.getFullYear();
+    const pMonth = currentDate.getMonth();
+    const pFirstDay = new Date(pYear, pMonth, 1).getDay();
     const adjustedFirstDay = pFirstDay === 0 ? 6 : pFirstDay - 1; 
-    const pDaysInMonth = new Date(Date.UTC(pYear, pMonth + 1, 0)).getUTCDate();
+    const pDaysInMonth = new Date(pYear, pMonth + 1, 0).getDate();
     
     let cellsHtml = '';
     
@@ -245,7 +272,7 @@ export const CalendarView = () => {
              const dateKey = `${pYear}-${String(pMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
              
              const dayEvents = filteredEvents.filter(e => {
-                 return e.start.toISOString().split('T')[0] === dateKey;
+                 return getLocalIsoString(e.start) === dateKey;
              });
              
              const uniqueSummaries = Array.from(new Set(dayEvents.map(e => e.summary)));
@@ -301,12 +328,12 @@ export const CalendarView = () => {
     printWindow.document.close();
   };
 
-  const year = currentDate.getUTCFullYear();
-  const month = currentDate.getUTCMonth();
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
   
-  const getDaysInMonth = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const getDaysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
   const getFirstDayOfMonth = (y: number, m: number) => {
-      const day = new Date(Date.UTC(y, m, 1)).getUTCDay();
+      const day = new Date(y, m, 1).getDay();
       return day === 0 ? 6 : day - 1; 
   };
   
@@ -318,11 +345,11 @@ export const CalendarView = () => {
       return null;
   });
 
-  const handlePrev = () => setCurrentDate(new Date(Date.UTC(year, month - 1, 1)));
-  const handleNext = () => setCurrentDate(new Date(Date.UTC(year, month + 1, 1)));
+  const handlePrev = () => setCurrentDate(new Date(year, month - 1, 1));
+  const handleNext = () => setCurrentDate(new Date(year, month + 1, 1));
   const handleToday = () => {
       const now = new Date();
-      setCurrentDate(new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)));
+      setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
   };
 
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-slate-400" /></div>;
@@ -394,10 +421,10 @@ export const CalendarView = () => {
             const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             
             const dayEvents = filteredEvents.filter(e => {
-                return e.start.toISOString().split('T')[0] === dateKey;
+                return getLocalIsoString(e.start) === dateKey;
             });
 
-            const isToday = new Date().toISOString().split('T')[0] === dateKey;
+            const isToday = getLocalIsoString(new Date()) === dateKey;
 
             return (
                 <div key={idx} className="bg-white p-2 min-h-[120px] overflow-hidden hover:bg-slate-50 transition-colors group">
@@ -442,10 +469,10 @@ export const CalendarView = () => {
                         <div className="p-2 bg-slate-100 rounded-lg text-slate-500"><Clock size={20} /></div>
                         <div>
                             <div className="font-bold text-slate-800">
-                                {selectedEvent.start.toLocaleDateString('en-AU', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' })}
+                                {selectedEvent.start.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })}
                             </div>
                             <div className="text-sm text-slate-500">
-                                {selectedEvent.start.toLocaleTimeString('en-AU', { timeZone: 'UTC', hour: '2-digit', minute:'2-digit' })} - {selectedEvent.end.toLocaleTimeString('en-AU', { timeZone: 'UTC', hour: '2-digit', minute:'2-digit' })}
+                                {selectedEvent.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' })} - {selectedEvent.end.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' })}
                             </div>
                         </div>
                     </div>
