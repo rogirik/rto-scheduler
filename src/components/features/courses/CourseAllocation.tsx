@@ -16,14 +16,12 @@ interface Props {
 export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
   const [loading, setLoading] = useState(true);
   
-  // Data State
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
   const [currentAllocations, setCurrentAllocations] = useState<UnitAllocation[]>([]);
   const [globalAllocations, setGlobalAllocations] = useState<UnitAllocation[]>([]);
   
-  // Global Data for Clash Detection
   const [allInstances, setAllInstances] = useState<CourseInstance[]>([]);
   const [allTemplates, setAllTemplates] = useState<Course[]>([]);
   const [teacherSchedules, setTeacherSchedules] = useState<Record<string, any[]>>({});
@@ -39,7 +37,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
 
-        // Fetch everything needed to build a global schedule
         const [tRes, sData, aData, instData, tempData, yData] = await Promise.all([
           supabase.from('teachers').select('*'), 
           ApiService.getSubjects(),
@@ -53,17 +50,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         let validTeachers = tRes.data || [];
         
         if (user) {
-            // --- FIXED: Looking at user_profiles instead of profiles ---
             try {
-                const { data: profile } = await supabase
-                    .from('user_profiles')
-                    .select('organization_id')
-                    .eq('id', user.id)
-                    .single();
+                const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', user.id).single();
                 if (profile) myOrgId = profile.organization_id;
-            } catch (e) {
-                // Ignore missing profile
-            }
+            } catch (e) {}
 
             if (!myOrgId) {
                 const myKnownTeacher = validTeachers.find(t => t.user_id === user.id && t.organization_id);
@@ -98,7 +88,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     fetchData();
   }, [instance.id]);
 
-  // Compute Global Events for Clash Detection
   useEffect(() => {
       if (allInstances.length === 0 || allTemplates.length === 0 || academicYears.length === 0) return;
       
@@ -120,11 +109,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                   if (!dayMap[ev.subjectId]) dayMap[ev.subjectId] = new Set();
                   let d = ev.start;
                   if (typeof d === 'string') d = new Date(d);
-                  dayMap[ev.subjectId].add(d.getUTCDay());
+                  dayMap[ev.subjectId].add(d.getDay()); // Strictly local
               });
           }
 
-          // Assign events to specific teachers based on global allocations
           taggedEvents.forEach(ev => {
               const alloc = globalAllocations.find(a => a.instance_id === inst.id && a.subject_id === ev.subjectId);
               if (alloc && alloc.teacher_id) {
@@ -149,7 +137,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
   }, [allInstances, allTemplates, academicYears, subjects, teachers, globalAllocations, instance]);
 
-  // Robust Availability Parser
   const isTeacherAvailableOnDay = (teacher: Teacher, day: number) => {
       let avail: any = teacher.availability;
       if (!avail) return false;
@@ -165,10 +152,16 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
-      // 1. ONLINE CHECK
+      // 1. THE YATES TACKLE: STRICT COMPETENCY CHECK
+      const competencies = (teacher as any).competencies || [];
+      if (!competencies.includes(subjectId)) {
+          return { available: false, reason: "Not Qualified" };
+      }
+
+      // 2. ONLINE CHECK
       if (teacher.trains_online && instance.delivery_mode !== 'Online') return { available: false, reason: "Online Only" };
 
-      // 2. LOAD CHECK
+      // 3. LOAD CHECK
       const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacherId);
       let currentAnnualLoad = 0;
       teacherAllocations.forEach(alloc => {
@@ -180,26 +173,25 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
       if (currentAnnualLoad > (teacher.max_hours || 800)) return { available: false, reason: "Over Max Hours" };
 
-      // 3. ACTUAL DAY AVAILABILITY CHECK
+      // 4. ACTUAL DAY AVAILABILITY CHECK
       const requiredDays = subjectRequiredDays[subjectId] && subjectRequiredDays[subjectId].length > 0 
           ? subjectRequiredDays[subjectId] 
           : (instance.allowed_days || [1, 2, 3, 4, 5]);
 
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       for (const day of requiredDays) {
-          if (day === 0) continue; // Skip strict Sunday checking
+          if (day === 0) continue; 
           if (!isTeacherAvailableOnDay(teacher, day)) {
               return { available: false, reason: `Not available on ${dayNames[day]}` };
           }
       }
 
-      // 4. CLASH DETECTION (Already Teaching)
+      // 5. CLASH DETECTION (Already Teaching)
       const proposedEvents = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       const existingEvents = teacherSchedules[teacherId] || [];
 
       for (const newEv of proposedEvents) {
           for (const existEv of existingEvents) {
-              // Ignore the exact subject we are currently trying to assign (prevents self-clashing)
               if (existEv.instanceId === instance.id && existEv.subjectId === subjectId) continue;
 
               const newStart = new Date(newEv.start).getTime();
@@ -209,8 +201,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
 
               if (newStart < existEnd && newEnd > existStart) {
                   const dt = new Date(existStart);
-                  // Force UTC string to avoid AEDT offset issues
-                  const dateStr = dt.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+                  const dateStr = dt.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
                   return { available: false, reason: `Clash: ${existEv.instanceName} on ${dateStr}` };
               }
           }
