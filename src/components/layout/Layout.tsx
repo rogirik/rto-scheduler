@@ -14,26 +14,51 @@ export const Layout = ({ children, currentView, onNavigate }: LayoutProps) => {
   useEffect(() => {
     const fetchOrganizationName = async () => {
       try {
-        // 1. Get the currently logged-in user
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
-        // 2. Find their Organization ID
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('organization_id')
-          .eq('id', user.id)
-          .single();
+        let myOrgId = null;
 
-        if (profile && profile.organization_id) {
-          // 3. Get the actual Organization Name
-          const { data: org } = await supabase
+        // 1. Try to get it from user_profiles
+        try {
+          const { data: profile } = await supabase
+            .from('user_profiles')
+            .select('organization_id')
+            .eq('id', user.id)
+            .single();
+          if (profile) myOrgId = profile.organization_id;
+        } catch (e) {
+          console.log("No user_profile found, checking teachers table...");
+        }
+
+        // 2. THE FIX: Fallback to the teachers table (like the rest of the app does)
+        if (!myOrgId) {
+          const { data: teachers } = await supabase
+            .from('teachers')
+            .select('user_id, organization_id')
+            .eq('user_id', user.id);
+          
+          if (teachers && teachers.length > 0) {
+            myOrgId = teachers[0].organization_id;
+          }
+        }
+
+        console.log("Layout discovered Org ID:", myOrgId);
+
+        // 3. Fetch the actual name from the organizations table
+        if (myOrgId) {
+          const { data: org, error } = await supabase
             .from('organizations')
             .select('name')
-            .eq('id', profile.organization_id)
+            .eq('id', myOrgId)
             .single();
 
+          if (error) {
+              console.error("Supabase blocked reading organizations:", error.message);
+          }
+
           if (org && org.name) {
+            console.log("Layout applied RTO Name:", org.name);
             setRtoName(org.name);
           }
         }
@@ -64,7 +89,7 @@ export const Layout = ({ children, currentView, onNavigate }: LayoutProps) => {
         <div className="p-6 border-b border-slate-100">
           <h1 
             className="text-xl font-extrabold text-blue-600 flex items-center gap-2 truncate"
-            title={rtoName} // Shows full name on hover if it gets cut off
+            title={rtoName}
           >
             <GraduationCap className="shrink-0" />
             <span className="truncate">{rtoName}</span>
