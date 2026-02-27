@@ -2,9 +2,13 @@ import type { CourseInstance, Course, Subject, AcademicYear } from '../services/
 
 const MAX_DATE_SEARCH_ITERATIONS = 365 * 3; 
 
-const parseAsUTC = (dateStr: string, timeStr = '00:00') => {
+// THE FIX: Parses dates strictly in the user's local timezone (No 'Z' Zulu/UTC overrides)
+const parseAsLocal = (dateStr: string, timeStr = '00:00') => {
     if (!dateStr) return new Date();
-    return new Date(`${dateStr}T${timeStr}:00Z`);
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const [h, min] = timeStr.split(':').map(Number);
+    // Month is 0-indexed in JS dates
+    return new Date(y, m - 1, d, h, min, 0);
 };
 
 // --- HELPER: CHECK HOLIDAYS ---
@@ -13,31 +17,29 @@ const isHolidayByStr = (dateStr: string, holidays: any[] = []) => {
     return holidays.some((h: any) => h.date === dateStr);
 };
 
-// --- HELPER: CHECK TERM DATES (FIXED) ---
-// Now supports 'start'/'end' (from your DB) AND 'startDate'/'endDate'
+// --- HELPER: CHECK TERM DATES ---
 const isWithinTerm = (date: Date, terms: any[] = []) => { 
     if (!Array.isArray(terms)) return false;
     const checkTime = date.getTime(); 
     
     return terms.some((term: any) => { 
-        // FIX: Check for both key variations
         const s = term.start || term.startDate;
         const e = term.end || term.endDate;
         
         if (!s || !e) return false;
 
-        const startTime = parseAsUTC(s).getTime(); 
-        const endTime = parseAsUTC(e).getTime(); 
+        const startTime = parseAsLocal(s).getTime(); 
+        const endTime = parseAsLocal(e, '23:59').getTime(); // End of the day
         return checkTime >= startTime && checkTime <= endTime; 
     }); 
 };
 
 // --- HELPER: CHECK NON-WORKING DAYS ---
 const isNonWorkingDay = (date: Date, holidays: any[] = []) => { 
-    const dayOfWeek = date.getUTCDay(); 
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(date.getUTCDate()).padStart(2, '0');
+    const dayOfWeek = date.getDay(); // Local day
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
     const dateStr = `${y}-${m}-${d}`;
     
     if (isHolidayByStr(dateStr, holidays)) return true; 
@@ -55,7 +57,6 @@ export const generateAllEventsForInstance = (
 ) => {
     // 1. Validate Inputs
     const rawTemplate = template as any;
-    // Check both snake_case (DB) and camelCase (Legacy)
     const seqSubjects = rawTemplate?.sequenced_subjects || rawTemplate?.sequencedSubjects;
 
     if (!instance.start_date || !seqSubjects || seqSubjects.length === 0) {
@@ -68,7 +69,7 @@ export const generateAllEventsForInstance = (
     const startTime = instance.start_time || '09:00';
     const [startHour, startMinute] = startTime.split(':').map(Number);
     
-    let currentDate = parseAsUTC(instance.start_date);
+    let currentDate = parseAsLocal(instance.start_date, startTime);
     
     // 2. Map Database Years for Quick Lookup
     const yearsMap: Record<string, AcademicYear> = {};
@@ -78,7 +79,6 @@ export const generateAllEventsForInstance = (
 
     // 3. Iterate through Subjects
     for (const subjectItem of seqSubjects) {
-        // Handle if subjectItem is a string ID or an object
         const subjectId = typeof subjectItem === 'string' ? subjectItem : subjectItem.subjectId || subjectItem.id;
         const subject = subjects.find(s => s.id === subjectId);
         
@@ -93,11 +93,10 @@ export const generateAllEventsForInstance = (
 
             // 4. Find Next Valid Date
             for (let i = 0; i < MAX_DATE_SEARCH_ITERATIONS; i++) {
-                const dayOfWeek = searchDate.getUTCDay(); 
-                const y = searchDate.getUTCFullYear();
+                const dayOfWeek = searchDate.getDay(); // Local Day
+                const y = searchDate.getFullYear();    // Local Year
                 const yearData = yearsMap[y.toString()];
 
-                // STRICT CHECK: The calendar will only fill if we find a matching Academic Year
                 if (
                     yearData && 
                     yearData.terms && 
@@ -108,7 +107,8 @@ export const generateAllEventsForInstance = (
                     foundRegularDate = new Date(searchDate);
                     break;
                 }
-                searchDate.setUTCDate(searchDate.getUTCDate() + 1);
+                // Step forward strictly by 1 local day
+                searchDate.setDate(searchDate.getDate() + 1);
             }
 
             sessionDate = foundRegularDate;
@@ -116,14 +116,16 @@ export const generateAllEventsForInstance = (
             if (!sessionDate) break;
 
             currentDate = new Date(sessionDate);
-            currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+            currentDate.setDate(currentDate.getDate() + 1);
 
             const hoursThisSession = Math.min(hoursToSchedule, hoursPerDay);
+            
+            // Set strictly local time bounds
             const start = new Date(sessionDate); 
-            start.setUTCHours(startHour, startMinute, 0, 0);
+            start.setHours(startHour, startMinute, 0, 0);
             
             const end = new Date(start); 
-            end.setUTCHours(start.getUTCHours() + Math.floor(hoursThisSession), (hoursThisSession % 1) * 60, 0, 0);
+            end.setHours(start.getHours() + Math.floor(hoursThisSession), start.getMinutes() + ((hoursThisSession % 1) * 60), 0, 0);
 
             events.push({
                 id: `${instance.id}-${subject.id}-${events.length}`,
