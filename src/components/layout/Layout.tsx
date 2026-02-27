@@ -1,5 +1,5 @@
-import React from 'react';
-import { BookOpen, Users, Settings, GraduationCap, Calendar, LogOut } from 'lucide-react'; // Add Calendar
+import React, { useState, useEffect } from 'react';
+import { BookOpen, Users, Settings, GraduationCap, Calendar, LogOut } from 'lucide-react';
 import { supabase } from '../../services/supabase';
 
 interface LayoutProps {
@@ -9,6 +9,42 @@ interface LayoutProps {
 }
 
 export const Layout = ({ children, currentView, onNavigate }: LayoutProps) => {
+  const [rtoName, setRtoName] = useState('RTO Scheduler');
+
+  useEffect(() => {
+    const fetchOrganizationName = async () => {
+      try {
+        // 1. Get the currently logged-in user
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        // 2. Find their Organization ID
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('organization_id')
+          .eq('id', user.id)
+          .single();
+
+        if (profile && profile.organization_id) {
+          // 3. Get the actual Organization Name
+          const { data: org } = await supabase
+            .from('organizations')
+            .select('name')
+            .eq('id', profile.organization_id)
+            .single();
+
+          if (org && org.name) {
+            setRtoName(org.name);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load RTO name:", error);
+      }
+    };
+
+    fetchOrganizationName();
+  }, []);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
   };
@@ -17,7 +53,7 @@ export const Layout = ({ children, currentView, onNavigate }: LayoutProps) => {
     { id: 'teachers', label: 'Teachers', icon: Users },
     { id: 'subjects', label: 'Subjects', icon: BookOpen },
     { id: 'courses', label: 'Courses', icon: GraduationCap },
-    { id: 'calendar', label: 'Calendar', icon: Calendar }, // New Tab
+    { id: 'calendar', label: 'Calendar', icon: Calendar },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -26,9 +62,12 @@ export const Layout = ({ children, currentView, onNavigate }: LayoutProps) => {
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">
-          <h1 className="text-xl font-extrabold text-blue-600 flex items-center gap-2">
-            <GraduationCap />
-            RTO Scheduler
+          <h1 
+            className="text-xl font-extrabold text-blue-600 flex items-center gap-2 truncate"
+            title={rtoName} // Shows full name on hover if it gets cut off
+          >
+            <GraduationCap className="shrink-0" />
+            <span className="truncate">{rtoName}</span>
           </h1>
         </div>
         
