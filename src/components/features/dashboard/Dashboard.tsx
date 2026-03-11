@@ -3,7 +3,7 @@ import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import type { Teacher, Course, Subject, AcademicYear } from '../../../services/api';
-import { Users, GraduationCap, Calendar, TrendingUp, Loader2, AlertCircle, CheckCircle2, MoreHorizontal } from 'lucide-react';
+import { Users, GraduationCap, Calendar, TrendingUp, Loader2, AlertCircle, CheckCircle2, MoreHorizontal, Bell, AlertTriangle } from 'lucide-react';
 
 export const Dashboard = () => {
   const [loading, setLoading] = useState(true);
@@ -21,6 +21,8 @@ export const Dashboard = () => {
   });
 
   const [trainerWorkload, setTrainerWorkload] = useState<any[]>([]);
+  // NEW: State for Air Traffic Control Alerts
+  const [alerts, setAlerts] = useState<{ id: string, type: 'error' | 'warning', message: string }[]>([]);
 
   useEffect(() => {
     loadData();
@@ -44,7 +46,6 @@ export const Dashboard = () => {
       let teachers = tRes.data || [];
       let allocations = aRes || [];
       let templates = tempRes || [];
-      // Do not strict filter reference data initially to protect calculation engine
       let subjects = subRes || [];
       let academicYears = yRes || [];
 
@@ -98,13 +99,39 @@ export const Dashboard = () => {
       
       const currentYear = new Date().getFullYear(); 
       const teacherHoursMap: Record<string, number> = {};
+      const tSchedules: Record<string, any[]> = {};
+      const newAlerts: { id: string, type: 'error' | 'warning', message: string }[] = [];
 
-      teachers.forEach(t => teacherHoursMap[t.id] = 0);
+      teachers.forEach(t => {
+          teacherHoursMap[t.id] = 0;
+          tSchedules[t.id] = [];
+      });
 
+      // --- ENGINE SWEEP: Calculate Events & Check Missing Allocations ---
       activeInstances.forEach(instance => {
         const template = templates.find(t => t.id === instance.template_id);
         
         if (template) {
+            // 1. Missing Trainers Check
+            const requiredSubjects = (template as any).sequenced_subjects?.length || 0;
+            const assignedSubjects = allocations.filter((a: any) => a.instance_id === instance.id).length;
+            
+            if (assignedSubjects < requiredSubjects && instance.start_date) {
+                const today = new Date();
+                const startDate = new Date(instance.start_date);
+                const daysUntil = Math.floor((startDate.getTime() - today.getTime()) / (1000 * 3600 * 24));
+                
+                // If it starts in less than 28 days (4 weeks) and is missing assignments
+                if (daysUntil <= 28 && daysUntil >= 0) {
+                    newAlerts.push({
+                        id: `missing-${instance.id}`,
+                        type: daysUntil <= 14 ? 'error' : 'warning',
+                        message: `Cohort ${instance.name} starts in ${daysUntil} days but has ${requiredSubjects - assignedSubjects} unassigned subjects.`
+                    });
+                }
+            }
+
+            // 2. Generate Events for Workload & Clash Check
             const events = generateAllEventsForInstance(
                 instance,
                 academicYears,
@@ -113,30 +140,41 @@ export const Dashboard = () => {
                 teachers
             );
 
-            const currentYearEvents = events.filter(e => {
-                const d = typeof e.start === 'string' ? new Date(e.start) : e.start;
-                return d.getFullYear() === currentYear;
-            });
-
-            currentYearEvents.forEach(event => {
+            events.forEach(event => {
                 const allocation = allocations.find((a: any) => 
                     a.instance_id === instance.id && a.subject_id === event.subjectId
                 );
 
                 if (allocation && allocation.teacher_id) {
-                    if (teacherHoursMap[allocation.teacher_id] !== undefined) {
-                        teacherHoursMap[allocation.teacher_id] += (event.hours || event.baseHours || 0);
+                    const eventDate = typeof event.start === 'string' ? new Date(event.start) : event.start;
+                    
+                    if (eventDate.getFullYear() === currentYear) {
+                        if (teacherHoursMap[allocation.teacher_id] !== undefined) {
+                            teacherHoursMap[allocation.teacher_id] += (event.hours || event.baseHours || 0);
+                        }
+                    }
+
+                    if (tSchedules[allocation.teacher_id]) {
+                        tSchedules[allocation.teacher_id].push({ ...event, instanceName: instance.name });
                     }
                 }
             });
         }
       });
 
+      // --- WORKLOAD & OVER-ALLOCATION CHECK ---
       let workload = teachers.map(teacher => {
         const allocatedHours = Math.round(teacherHoursMap[teacher.id] || 0);
         const maxHours = teacher.max_hours || 800; 
-        
         const capacityMetric = maxHours > 0 ? (allocatedHours / maxHours) * 100 : 0;
+
+        if (allocatedHours > maxHours) {
+            newAlerts.push({
+                id: `over-${teacher.id}`,
+                type: 'error',
+                message: `${teacher.name} is over-allocated (${allocatedHours} / ${maxHours} hrs).`
+            });
+        }
 
         return {
           ...teacher,
@@ -151,11 +189,34 @@ export const Dashboard = () => {
       if (role === 'teacher' && user) {
           workload = workload.filter(w => w.user_id === user.id);
       }
-
       setTrainerWorkload(workload);
 
+      // --- CLASH DETECTION CHECK ---
+      Object.keys(tSchedules).forEach(tId => {
+          const events = tSchedules[tId].sort((a, b) => a.start.getTime() - b.start.getTime());
+          const teacherName = teachers.find(t => t.id === tId)?.name || 'Unknown Teacher';
+          
+          for (let i = 0; i < events.length - 1; i++) {
+              const current = events[i];
+              const next = events[i+1];
+              
+              if (next.start.getTime() < current.end.getTime()) {
+                  const dateStr = current.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+                  newAlerts.push({ 
+                      id: `clash-${tId}-${i}`, 
+                      type: 'error', 
+                      message: `Clash: ${teacherName} is double-booked on ${dateStr} (${current.instanceName} and ${next.instanceName}).` 
+                  });
+              }
+          }
+      });
+
+      // Sort alerts: Errors first, then warnings
+      newAlerts.sort((a, b) => (a.type === 'error' ? -1 : 1) - (b.type === 'error' ? -1 : 1));
+      setAlerts(newAlerts);
+
+      // --- BASIC STATS ---
       const assignedUnits = allocations.filter((a: any) => activeInstances.some(i => i.id === a.instance_id)).length;
-      
       let totalUnitsRequired = 0;
       activeInstances.forEach(instance => {
         const template = templates.find(t => t.id === instance.template_id);
@@ -251,22 +312,31 @@ export const Dashboard = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
-        {/* System Status */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <h3 className="font-bold text-slate-800 mb-4">System Status</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                <div className="flex items-center gap-3"><CheckCircle2 className="text-green-500" size={20} /><span className="font-medium text-slate-700">Database Connection</span></div>
-                <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-1 rounded">Online</span>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                <div className="flex items-center gap-3"><CheckCircle2 className="text-green-500" size={20} /><span className="font-medium text-slate-700">Allocation Engine</span></div>
-                <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-1 rounded">Ready</span>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                <div className="flex items-center gap-3"><CheckCircle2 className="text-green-500" size={20} /><span className="font-medium text-slate-700">Calendar Sync</span></div>
-                <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-1 rounded">Active</span>
-            </div>
+        {/* NEW: AIR TRAFFIC CONTROL / ACTION REQUIRED */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-[320px]">
+          <div className="flex justify-between items-center mb-5">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+               <Bell className="text-blue-600" size={20} /> Action Required
+            </h3>
+            {alerts.length > 0 && (
+                <span className="bg-red-100 text-red-700 text-xs font-bold px-2.5 py-1 rounded-full">{alerts.length}</span>
+            )}
+          </div>
+          <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
+            {alerts.length === 0 ? (
+               <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                 <CheckCircle2 size={40} className="mb-3 text-emerald-400" />
+                 <p className="font-medium text-slate-600">All systems green.</p>
+                 <p className="text-xs mt-1">No clashes, overloads, or missing trainers.</p>
+               </div>
+            ) : (
+               alerts.map(alert => (
+                 <div key={alert.id} className={`p-3.5 rounded-xl border text-sm flex gap-3 items-start ${alert.type === 'error' ? 'bg-red-50 border-red-100 text-red-800' : 'bg-amber-50 border-amber-100 text-amber-800'}`}>
+                    <AlertTriangle size={18} className={`shrink-0 mt-0.5 ${alert.type === 'error' ? 'text-red-500' : 'text-amber-500'}`} />
+                    <span className="font-medium leading-relaxed">{alert.message}</span>
+                 </div>
+               ))
+            )}
           </div>
         </div>
 
@@ -278,7 +348,7 @@ export const Dashboard = () => {
                 </h3>
                 <button className="text-slate-400 hover:text-slate-600"><MoreHorizontal size={20} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto pr-2 space-y-4">
+            <div className="flex-1 overflow-y-auto pr-2 space-y-4 custom-scrollbar">
                 {trainerWorkload.length === 0 ? <div className="text-center text-slate-400 py-8">No active workload data.</div> : (
                     trainerWorkload.map(trainer => (
                         <div key={trainer.id} className="flex items-center gap-4">
