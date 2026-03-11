@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../../../services/supabase';
-import { Users, Trash2, Copy, Shield, UserPlus } from 'lucide-react';
+import { Users, Trash2, Copy, Shield, UserPlus, ShieldAlert, BookOpen, Eye } from 'lucide-react';
 
 export const TeamSettings = () => {
   const [team, setTeam] = useState<any[]>([]);
   const [joinCode, setJoinCode] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [myRole, setMyRole] = useState('member');
+  const [updatingRole, setUpdatingRole] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTeamData();
@@ -18,10 +19,6 @@ export const TeamSettings = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // ---------------------------------------------------------
-      // THE FIX: Use .rpc() instead of .from().select()
-      // This calls the "Bypass Function" we just created.
-      // ---------------------------------------------------------
       const { data: teamMembers, error } = await supabase.rpc('get_team_members');
 
       if (error) {
@@ -29,15 +26,12 @@ export const TeamSettings = () => {
         throw error;
       }
 
-      // If we got data back, update the state
       if (teamMembers) {
         setTeam(teamMembers);
         
-        // Find "Me" in the list to check my role
         const me = teamMembers.find((m: any) => m.id === user.id);
         setMyRole(me?.role || 'member');
 
-        // Fetch the Join Code (Only if I have an Org)
         if (me?.organization_id) {
           const { data: org } = await supabase
             .from('organizations')
@@ -55,16 +49,47 @@ export const TeamSettings = () => {
   };
 
   const handleRemoveMember = async (userId: string) => {
-    if (!confirm('Are you sure you want to remove this user?')) return;
+    if (!confirm('Are you sure you want to remove this user from the organization?')) return;
     
-    // Deleting still uses the normal table method (checked by Policy)
+    // Set their organization_id to null instead of deleting the profile outright
     const { error } = await supabase
       .from('user_profiles')
-      .delete()
+      .update({ organization_id: null, role: 'teacher' })
       .eq('id', userId);
 
-    if (error) alert('Error removing user: ' + error.message);
-    else fetchTeamData(); // Refresh list after delete
+    if (error) {
+        alert('Error removing user: ' + error.message);
+    } else {
+        fetchTeamData(); 
+    }
+  };
+
+  // --- THE NEW ROLE UPDATER ---
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    setUpdatingRole(userId);
+    try {
+      const { error } = await supabase
+        .from('user_profiles')
+        .update({ role: newRole })
+        .eq('id', userId);
+
+      if (error) throw error;
+      
+      // Update local state instantly so the UI feels snappy
+      setTeam(prev => prev.map(m => m.id === userId ? { ...m, role: newRole } : m));
+    } catch (error: any) {
+        alert('Error updating role: ' + error.message);
+    } finally {
+        setUpdatingRole(null);
+    }
+  };
+
+  const getRoleIcon = (role: string) => {
+      switch(role) {
+          case 'admin': return <ShieldAlert size={14} className="text-purple-600" />;
+          case 'viewer': return <Eye size={14} className="text-slate-500" />;
+          default: return <BookOpen size={14} className="text-emerald-600" />;
+      }
   };
 
   if (loading) return <div className="p-8 text-center text-slate-400">Loading team settings...</div>;
@@ -111,7 +136,7 @@ export const TeamSettings = () => {
           <thead className="bg-slate-50 text-xs uppercase text-slate-500 font-semibold border-b border-slate-100">
             <tr>
               <th className="px-6 py-4">User Details</th>
-              <th className="px-6 py-4">Role</th>
+              <th className="px-6 py-4">Access Level</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
           </thead>
@@ -120,12 +145,13 @@ export const TeamSettings = () => {
               <tr key={member.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center text-blue-700 font-bold text-sm">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center text-blue-700 font-bold text-sm shrink-0">
                       {(member.full_name?.[0] || member.email?.[0] || 'U').toUpperCase()}
                     </div>
                     <div>
                       <div className="font-bold text-slate-900">
                         {member.full_name || 'Staff Member'}
+                        {member.id === team.find(m => m.role === myRole)?.id && <span className="ml-2 text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200">(You)</span>}
                       </div>
                       <div className="text-xs text-slate-500 font-mono">
                         {member.email}
@@ -133,20 +159,46 @@ export const TeamSettings = () => {
                     </div>
                   </div>
                 </td>
+                
+                {/* ROLE DROPDOWN */}
                 <td className="px-6 py-4">
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                    member.role === 'admin' 
-                      ? 'bg-purple-50 text-purple-700 border-purple-100' 
-                      : 'bg-green-50 text-green-700 border-green-100'
-                  }`}>
-                    {member.role ? member.role.toUpperCase() : 'MEMBER'}
-                  </span>
+                    <div className="flex items-center gap-2">
+                        {getRoleIcon(member.role || 'teacher')}
+                        
+                        {/* Only Admins can change roles, and they can't demote themselves */}
+                        {myRole === 'admin' && member.id !== team.find(m => m.role === myRole)?.id ? (
+                             <select 
+                                value={member.role || 'teacher'}
+                                onChange={(e) => handleRoleChange(member.id, e.target.value)}
+                                disabled={updatingRole === member.id}
+                                className={`text-xs font-bold px-3 py-1.5 rounded-lg border outline-none cursor-pointer transition-colors ${
+                                    member.role === 'admin' ? 'bg-purple-50 text-purple-700 border-purple-200 focus:ring-purple-500' :
+                                    member.role === 'viewer' ? 'bg-slate-50 text-slate-600 border-slate-200 focus:ring-slate-500' :
+                                    'bg-emerald-50 text-emerald-700 border-emerald-200 focus:ring-emerald-500'
+                                }`}
+                            >
+                                <option value="admin">Admin (Full Access)</option>
+                                <option value="teacher">Teacher (Standard)</option>
+                                <option value="viewer">Viewer (Read-Only)</option>
+                            </select>
+                        ) : (
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold border uppercase tracking-wider ${
+                                member.role === 'admin' ? 'bg-purple-50 text-purple-700 border-purple-100' :
+                                member.role === 'viewer' ? 'bg-slate-50 text-slate-600 border-slate-200' :
+                                'bg-emerald-50 text-emerald-700 border-emerald-100'
+                            }`}>
+                                {member.role || 'TEACHER'}
+                            </span>
+                        )}
+                        {updatingRole === member.id && <span className="text-xs text-blue-500 animate-pulse">Updating...</span>}
+                    </div>
                 </td>
+
                 <td className="px-6 py-4 text-right">
-                  {myRole === 'admin' && member.role !== 'admin' && (
+                  {myRole === 'admin' && member.id !== team.find(m => m.role === myRole)?.id && (
                     <button 
                       onClick={() => handleRemoveMember(member.id)}
-                      className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-all"
+                      className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-all border border-transparent hover:border-red-100"
                       title="Remove User"
                     >
                       <Trash2 size={18} />
