@@ -4,7 +4,7 @@ import { supabase } from '../../../services/supabase';
 import type { CourseInstance, UnitAllocation, Teacher, Subject, Course, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
-  X, CheckCircle2, User, Loader2, Search, ArrowRight, BookOpen, RotateCcw
+  X, CheckCircle2, Loader2, Search, ArrowRight, BookOpen, RotateCcw
 } from 'lucide-react';
 
 interface Props {
@@ -109,7 +109,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                   if (!dayMap[ev.subjectId]) dayMap[ev.subjectId] = new Set();
                   let d = ev.start;
                   if (typeof d === 'string') d = new Date(d);
-                  dayMap[ev.subjectId].add(d.getDay()); // Strictly local
+                  dayMap[ev.subjectId].add(d.getDay()); 
               });
           }
 
@@ -152,16 +152,13 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
-      // 1. THE YATES TACKLE: STRICT COMPETENCY CHECK
       const competencies = (teacher as any).competencies || [];
       if (!competencies.includes(subjectId)) {
           return { available: false, reason: "Not Qualified" };
       }
 
-      // 2. ONLINE CHECK
       if (teacher.trains_online && instance.delivery_mode !== 'Online') return { available: false, reason: "Online Only" };
 
-      // 3. LOAD CHECK
       const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacherId);
       let currentAnnualLoad = 0;
       teacherAllocations.forEach(alloc => {
@@ -173,7 +170,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
       if (currentAnnualLoad > (teacher.max_hours || 800)) return { available: false, reason: "Over Max Hours" };
 
-      // 4. ACTUAL DAY AVAILABILITY CHECK
       const requiredDays = subjectRequiredDays[subjectId] && subjectRequiredDays[subjectId].length > 0 
           ? subjectRequiredDays[subjectId] 
           : (instance.allowed_days || [1, 2, 3, 4, 5]);
@@ -186,7 +182,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           }
       }
 
-      // 5. CLASH DETECTION (Already Teaching)
       const proposedEvents = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       const existingEvents = teacherSchedules[teacherId] || [];
 
@@ -241,6 +236,18 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         } else {
             await supabase.from('course_unit_allocations').insert([payload]);
         }
+
+        // --- NEW: FIRE NOTIFICATION FOR ASSIGNMENT ---
+        const teacher = teachers.find(t => t.id === teacherId);
+        const subject = subjects.find(s => s.id === selectedSubjectId);
+        if (teacher?.user_id && subject) {
+             await supabase.from('notifications').insert([{
+                 user_id: teacher.user_id,
+                 title: 'New Class Assigned',
+                 message: `You have been assigned to deliver ${subject.name} for cohort ${instance.name}.`
+             }]);
+        }
+
     } catch (e) {
         console.error("Assignment error:", e);
         alert("Assignment failed. Check console.");
@@ -255,6 +262,18 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     try {
       const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
       if (existingAlloc && existingAlloc.id) {
+        
+        // --- NEW: FIRE NOTIFICATION FOR REMOVAL BEFORE WE DELETE THE RECORD ---
+        const assignedTeacher = teachers.find(t => t.id === existingAlloc.teacher_id);
+        const subject = subjects.find(s => s.id === subjectId);
+        if (assignedTeacher?.user_id && subject) {
+             await supabase.from('notifications').insert([{
+                 user_id: assignedTeacher.user_id,
+                 title: 'Class Removed',
+                 message: `You are no longer scheduled to deliver ${subject.name} for cohort ${instance.name}.`
+             }]);
+        }
+
         if (!existingAlloc.id.toString().startsWith('temp')) {
             await supabase.from('course_unit_allocations').delete().eq('id', existingAlloc.id);
         }
