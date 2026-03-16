@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from './services/supabase'; // Import Supabase client
+import { supabase } from './services/supabase'; 
 import { 
   LayoutDashboard, 
   Users, 
@@ -8,7 +8,10 @@ import {
   Calendar, 
   Settings, 
   LogOut,
-  Loader2 
+  Loader2,
+  Bell,
+  Check,
+  X
 } from 'lucide-react';
 
 // Auth Component
@@ -21,26 +24,25 @@ import { SubjectList } from './components/features/subjects/SubjectList';
 import { CourseList } from './components/features/courses/CourseList';
 import { CalendarView } from './components/features/calendar/CalendarView'; 
 import { SettingsView } from './components/features/settings/SettingsView'; 
-import { TeamSettings } from './components/features/settings/TeamSettings';
 import { UpdatePasswordModal } from './components/auth/UpdatePasswordModal';
 
 function App() {
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
-  
-  // NEW: State for the dynamic RTO Name
   const [rtoName, setRtoName] = useState('RTO Scheduler');
+
+  // --- NOTIFICATION STATE ---
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
   // --- AUTH LISTENER ---
   useEffect(() => {
-    // 1. Check active session on load
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthLoading(false);
     });
 
-    // 2. Listen for login/logout events
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setAuthLoading(false);
@@ -49,79 +51,90 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // --- FETCH DYNAMIC RTO NAME ---
+  // --- FETCH DYNAMIC RTO NAME & NOTIFICATIONS ---
   useEffect(() => {
-    const fetchOrganizationName = async () => {
+    const fetchUserData = async () => {
       if (!session?.user) return;
       
       try {
+        // 1. Fetch RTO Name
         let myOrgId = null;
-
-        // 1. Try to get it from user_profiles
         try {
-          const { data: profile } = await supabase
-            .from('user_profiles')
-            .select('organization_id')
-            .eq('id', session.user.id)
-            .single();
+          const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', session.user.id).single();
           if (profile) myOrgId = profile.organization_id;
-        } catch (e) {
-          // Ignore missing profile
-        }
+        } catch (e) {}
 
-        // 2. Fallback to the teachers table
         if (!myOrgId) {
-          const { data: teachers } = await supabase
-            .from('teachers')
-            .select('organization_id')
-            .eq('user_id', session.user.id)
-            .limit(1);
-          
-          if (teachers && teachers.length > 0) {
-            myOrgId = teachers[0].organization_id;
-          }
+          const { data: teachers } = await supabase.from('teachers').select('organization_id').eq('user_id', session.user.id).limit(1);
+          if (teachers && teachers.length > 0) myOrgId = teachers[0].organization_id;
         }
 
-        // 3. Fetch the actual name from the organizations table
         if (myOrgId) {
-          const { data: org, error } = await supabase
-            .from('organizations')
-            .select('name')
-            .eq('id', myOrgId)
-            .single();
-
-          if (org && org.name) {
-            setRtoName(org.name);
-          }
+          const { data: org } = await supabase.from('organizations').select('name').eq('id', myOrgId).single();
+          if (org && org.name) setRtoName(org.name);
         }
+
+        // 2. Fetch Notifications
+        const { data: notifs } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .order('created_at', { ascending: false })
+          .limit(20);
+          
+        if (notifs) setNotifications(notifs);
+
       } catch (error) {
-        console.error("Failed to load RTO name:", error);
+        console.error("Failed to load user data:", error);
       }
     };
 
-    fetchOrganizationName();
+    fetchUserData();
+
+    // 3. Real-time Notification Listener
+    if (session?.user) {
+        const notifSubscription = supabase
+            .channel('public:notifications')
+            .on('postgres_changes', { 
+                event: 'INSERT', 
+                schema: 'public', 
+                table: 'notifications', 
+                filter: `user_id=eq.${session.user.id}` 
+            }, (payload) => {
+                setNotifications((current) => [payload.new, ...current]);
+            })
+            .subscribe();
+
+        return () => { supabase.removeChannel(notifSubscription); };
+    }
   }, [session]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
   };
 
+  // --- NOTIFICATION HANDLERS ---
+  const markAsRead = async (id: string) => {
+    setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: true } : n));
+    await supabase.from('notifications').update({ is_read: true }).eq('id', id);
+  };
+
+  const markAllAsRead = async () => {
+    setNotifications(notifications.map(n => ({ ...n, is_read: true })));
+    await supabase.from('notifications').update({ is_read: true }).eq('user_id', session?.user?.id);
+  };
+
+  const unreadCount = notifications.filter(n => !n.is_read).length;
+
   const renderContent = () => {
     switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard />;
-      case 'teachers':
-        return <TeacherList />;
-      case 'subjects':
-        return <SubjectList />;
-      case 'courses':
-        return <CourseList />;
-      case 'calendar':
-        return <CalendarView />;
-      case 'settings':
-        return <SettingsView />;
-      default:
-        return <Dashboard />;
+      case 'dashboard': return <Dashboard />;
+      case 'teachers': return <TeacherList />;
+      case 'subjects': return <SubjectList />;
+      case 'courses': return <CourseList />;
+      case 'calendar': return <CalendarView />;
+      case 'settings': return <SettingsView />;
+      default: return <Dashboard />;
     }
   };
 
@@ -139,9 +152,6 @@ function App() {
     </button>
   );
 
-  // --- RENDER STATES ---
-
-  // 1. Loading Spinner (while checking if logged in)
   if (authLoading) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-slate-50 text-blue-600">
@@ -150,26 +160,31 @@ function App() {
     );
   }
 
-  // 2. Login Screen (if not logged in)
   if (!session) {
     return <LoginView />;
   }
 
-  // 3. Main App (if logged in)
   return (
-    <div className="flex h-screen bg-slate-50 font-sans text-slate-900">
+    <div className="flex h-screen bg-slate-50 font-sans text-slate-900 relative">
       
       {/* SIDEBAR */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col fixed h-full z-10">
-        <div className="p-6">
-          {/* UPDATED: Dynamic RTO Name with truncation for long names */}
-          <h1 
-            className="text-xl font-extrabold text-blue-700 flex items-center gap-2 truncate pr-2"
-            title={rtoName}
-          >
+      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col fixed h-full z-20">
+        <div className="p-6 flex items-center justify-between">
+          <h1 className="text-xl font-extrabold text-blue-700 flex items-center gap-2 truncate pr-2" title={rtoName}>
             <GraduationCap size={28} className="shrink-0" />
             <span className="truncate">{rtoName}</span>
           </h1>
+
+          {/* NOTIFICATION BELL */}
+          <button 
+            onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors relative"
+          >
+            <Bell size={20} />
+            {unreadCount > 0 && (
+              <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
+            )}
+          </button>
         </div>
 
         <nav className="flex-1 px-4 overflow-y-auto">
@@ -196,6 +211,46 @@ function App() {
           </button>
         </div>
       </aside>
+
+      {/* NOTIFICATION FLYOUT PANEL */}
+      {isNotificationsOpen && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setIsNotificationsOpen(false)}></div>
+          <div className="fixed top-6 left-64 ml-4 w-96 max-h-[80vh] bg-white rounded-2xl shadow-2xl border border-slate-200 z-40 flex flex-col overflow-hidden animate-in fade-in slide-in-from-left-4 duration-200">
+            <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <Bell size={16} className="text-blue-600" /> Notifications
+              </h3>
+              <div className="flex items-center gap-2">
+                {unreadCount > 0 && (
+                  <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors">Mark all read</button>
+                )}
+                <button onClick={() => setIsNotificationsOpen(false)} className="text-slate-400 hover:text-slate-600 p-1"><X size={16}/></button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+              {notifications.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-sm">You're all caught up!</div>
+              ) : (
+                notifications.map(notif => (
+                  <div key={notif.id} onClick={() => markAsRead(notif.id)} className={`p-3 rounded-xl cursor-pointer transition-colors ${notif.is_read ? 'bg-white hover:bg-slate-50' : 'bg-blue-50/50 border border-blue-100'}`}>
+                    <div className="flex justify-between items-start gap-4">
+                      <div className="flex-1">
+                        <h4 className={`text-sm ${notif.is_read ? 'font-medium text-slate-700' : 'font-bold text-blue-900'}`}>{notif.title}</h4>
+                        <p className={`text-xs mt-1 leading-relaxed ${notif.is_read ? 'text-slate-500' : 'text-slate-700'}`}>{notif.message}</p>
+                        <span className="text-[10px] text-slate-400 mt-2 block font-medium uppercase tracking-wider">
+                          {new Date(notif.created_at).toLocaleDateString('en-AU', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      {!notif.is_read && <div className="w-2 h-2 rounded-full bg-blue-600 shrink-0 mt-1"></div>}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 ml-64 p-8 overflow-y-auto h-screen">
