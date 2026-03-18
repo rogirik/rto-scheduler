@@ -147,15 +147,27 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       return false;
   };
 
-  // THIS IS THE BRAIN: The strict rule engine
+  // 1. THE BRAIN: Strict Rule Engine
   const getTeacherStatus = (teacherId: string, subjectId: string) => {
       const teacher = teachers.find(t => t.id === teacherId);
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
-      // 1. STRICT COMPETENCY CHECK
-      const competencies = (teacher as any).competencies || [];
-      if (!competencies.includes(subjectId)) {
+      // 1. BULLETPROOF COMPETENCY CHECK
+      let comps = (teacher as any).competencies;
+      if (typeof comps === 'string') {
+          try { comps = JSON.parse(comps); } catch(e) { comps = []; }
+      }
+      if (!Array.isArray(comps)) comps = [];
+
+      const hasCompetency = comps.some((c: any) => {
+          if (typeof c === 'string') return c === subjectId;
+          if (c && typeof c.id === 'string') return c.id === subjectId;
+          if (c && typeof c.subject_id === 'string') return c.subject_id === subjectId;
+          return false;
+      });
+
+      if (!hasCompetency) {
           return { available: false, reason: "Not Qualified" };
       }
 
@@ -216,7 +228,9 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     
     const status = getTeacherStatus(teacherId, selectedSubjectId);
     if (status && !status.available) {
-        if (!confirm(`WARNING: ${status.reason}.\n\nAre you sure you want to force this assignment?`)) return;
+        // STRICT LOCK: We completely removed the `confirm()` dialog here.
+        alert(`STRICT COMPLIANCE LOCK: Cannot assign. ${status.reason}`);
+        return;
     }
 
     setProcessingSubjectId(selectedSubjectId);
@@ -243,7 +257,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             await supabase.from('course_unit_allocations').insert([payload]);
         }
 
-        // --- FIRE NOTIFICATION FOR ASSIGNMENT ---
         const teacher = teachers.find(t => t.id === teacherId);
         const subject = subjects.find(s => s.id === selectedSubjectId);
         if (teacher?.user_id && subject) {
@@ -262,14 +275,12 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     }
   };
 
-  // --- NEW: STRICT AUTO-ASSIGN LOGIC ---
   const handleAutoAssign = async () => {
     if (!confirm("This will safely auto-assign qualified and available trainers to any empty subjects. Proceed?")) return;
     
     setLoading(true);
     let assignedCount = 0;
     
-    // Grab the list of subjects that belong to this template
     const matchedTemplate = allTemplates.find(t => t.id === instance.template_id);
     const subjectList = (matchedTemplate as any)?.sequenced_subjects || (matchedTemplate as any)?.sequencedSubjects || [];
     const resolvedSubjects = subjectList.map((item: any) => {
@@ -277,20 +288,16 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         return subjects.find(s => s.id === id);
     }).filter(Boolean) as Subject[];
 
-    // Copy our local state to mutate as we loop
     let tempLocalAllocations = [...currentAllocations];
     let tempGlobalAllocations = [...globalAllocations];
     const newInsertions: any[] = [];
     const newNotifications: any[] = [];
 
     for (const subject of resolvedSubjects) {
-        // Skip if already assigned
         if (tempLocalAllocations.some(a => a.subject_id === subject.id)) continue;
 
-        // Find the first completely compliant teacher
         let compliantTeacherId = null;
         for (const teacher of teachers) {
-            // This guarantees they are qualified, have hours, and no clashes!
             const status = getTeacherStatus(teacher.id, subject.id);
             if (status && status.available) {
                 compliantTeacherId = teacher.id;
@@ -307,7 +314,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             newInsertions.push(payload);
             assignedCount++;
 
-            // Queue the notification
             const teacherObj = teachers.find(t => t.id === compliantTeacherId);
             if (teacherObj?.user_id) {
                  newNotifications.push({
@@ -345,7 +351,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     try {
       const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
       if (existingAlloc && existingAlloc.id) {
-        
         const assignedTeacher = teachers.find(t => t.id === existingAlloc.teacher_id);
         const subject = subjects.find(s => s.id === subjectId);
         if (assignedTeacher?.user_id && subject) {
@@ -398,11 +403,9 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500"><span className="font-bold text-blue-600">{instance.name}</span><span>•</span><span>{instance.delivery_mode}</span><span>•</span><span>{resolvedSubjects.length} Units</span></div>
           </div>
           <div className="flex gap-3">
-              {/* NEW AUTO ASSIGN BUTTON */}
               <button onClick={handleAutoAssign} className="px-3 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-bold text-xs transition-colors border border-blue-200 flex items-center gap-1">
                 <Wand2 size={14} /> Auto Assign
               </button>
-              
               <button onClick={handleClearCourse} className="px-3 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg font-bold text-xs transition-colors border border-red-200 flex items-center gap-1">
                 <RotateCcw size={14} /> Clear All
               </button>
@@ -467,7 +470,17 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                         teacherAllocations.forEach(alloc => { const sub = subjects.find(s => s.id === alloc.subject_id); if (sub) displayLoad += (sub.hours || 0); });
 
                         return (
-                            <button key={teacher.id} disabled={!selectedSubjectId || isAssignedToSelected || processingSubjectId !== null} onClick={() => selectedSubjectId && handleAssign(teacher.id)} className={`w-full text-left p-3 rounded-xl border flex items-center gap-3 transition-all group ${isAssignedToSelected ? 'bg-emerald-600 border-emerald-600 text-white shadow-md cursor-default' : !selectedSubjectId || processingSubjectId !== null ? 'opacity-50 cursor-not-allowed bg-slate-50 border-slate-100' : 'hover:border-blue-400 hover:shadow-md bg-white border-slate-200'}`}>
+                            <button 
+                                key={teacher.id} 
+                                // THE FIX: If they aren't available, the button is physically disabled.
+                                disabled={!selectedSubjectId || isAssignedToSelected || processingSubjectId !== null || !isAvailable} 
+                                onClick={() => selectedSubjectId && handleAssign(teacher.id)} 
+                                className={`w-full text-left p-3 rounded-xl border flex items-center gap-3 transition-all group ${
+                                    isAssignedToSelected ? 'bg-emerald-600 border-emerald-600 text-white shadow-md cursor-default' : 
+                                    (!selectedSubjectId || processingSubjectId !== null || !isAvailable) ? 'opacity-50 cursor-not-allowed bg-slate-50 border-slate-100' : 
+                                    'hover:border-blue-400 hover:shadow-md bg-white border-slate-200'
+                                }`}
+                            >
                                 <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${isAssignedToSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>{teacher.name.charAt(0)}</div>
                                 <div className="flex-1 min-w-0">
                                     <div className="flex justify-between items-center">
