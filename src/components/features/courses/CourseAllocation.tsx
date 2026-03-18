@@ -4,7 +4,7 @@ import { supabase } from '../../../services/supabase';
 import type { CourseInstance, UnitAllocation, Teacher, Subject, Course, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
-  X, CheckCircle2, Loader2, Search, ArrowRight, BookOpen, RotateCcw
+  X, CheckCircle2, Loader2, Search, ArrowRight, BookOpen, RotateCcw, Wand2
 } from 'lucide-react';
 
 interface Props {
@@ -147,18 +147,22 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       return false;
   };
 
+  // THIS IS THE BRAIN: The strict rule engine
   const getTeacherStatus = (teacherId: string, subjectId: string) => {
       const teacher = teachers.find(t => t.id === teacherId);
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
+      // 1. STRICT COMPETENCY CHECK
       const competencies = (teacher as any).competencies || [];
       if (!competencies.includes(subjectId)) {
           return { available: false, reason: "Not Qualified" };
       }
 
+      // 2. ONLINE CHECK
       if (teacher.trains_online && instance.delivery_mode !== 'Online') return { available: false, reason: "Online Only" };
 
+      // 3. LOAD CHECK
       const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacherId);
       let currentAnnualLoad = 0;
       teacherAllocations.forEach(alloc => {
@@ -170,6 +174,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
       if (currentAnnualLoad > (teacher.max_hours || 800)) return { available: false, reason: "Over Max Hours" };
 
+      // 4. ACTUAL DAY AVAILABILITY CHECK
       const requiredDays = subjectRequiredDays[subjectId] && subjectRequiredDays[subjectId].length > 0 
           ? subjectRequiredDays[subjectId] 
           : (instance.allowed_days || [1, 2, 3, 4, 5]);
@@ -182,6 +187,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           }
       }
 
+      // 5. CLASH DETECTION (Already Teaching)
       const proposedEvents = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       const existingEvents = teacherSchedules[teacherId] || [];
 
@@ -237,7 +243,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             await supabase.from('course_unit_allocations').insert([payload]);
         }
 
-        // --- NEW: FIRE NOTIFICATION FOR ASSIGNMENT ---
+        // --- FIRE NOTIFICATION FOR ASSIGNMENT ---
         const teacher = teachers.find(t => t.id === teacherId);
         const subject = subjects.find(s => s.id === selectedSubjectId);
         if (teacher?.user_id && subject) {
@@ -256,6 +262,83 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     }
   };
 
+  // --- NEW: STRICT AUTO-ASSIGN LOGIC ---
+  const handleAutoAssign = async () => {
+    if (!confirm("This will safely auto-assign qualified and available trainers to any empty subjects. Proceed?")) return;
+    
+    setLoading(true);
+    let assignedCount = 0;
+    
+    // Grab the list of subjects that belong to this template
+    const matchedTemplate = allTemplates.find(t => t.id === instance.template_id);
+    const subjectList = (matchedTemplate as any)?.sequenced_subjects || (matchedTemplate as any)?.sequencedSubjects || [];
+    const resolvedSubjects = subjectList.map((item: any) => {
+        const id = typeof item === 'string' ? item : item.id;
+        return subjects.find(s => s.id === id);
+    }).filter(Boolean) as Subject[];
+
+    // Copy our local state to mutate as we loop
+    let tempLocalAllocations = [...currentAllocations];
+    let tempGlobalAllocations = [...globalAllocations];
+    const newInsertions: any[] = [];
+    const newNotifications: any[] = [];
+
+    for (const subject of resolvedSubjects) {
+        // Skip if already assigned
+        if (tempLocalAllocations.some(a => a.subject_id === subject.id)) continue;
+
+        // Find the first completely compliant teacher
+        let compliantTeacherId = null;
+        for (const teacher of teachers) {
+            // This guarantees they are qualified, have hours, and no clashes!
+            const status = getTeacherStatus(teacher.id, subject.id);
+            if (status && status.available) {
+                compliantTeacherId = teacher.id;
+                break;
+            }
+        }
+
+        if (compliantTeacherId) {
+            const payload = { instance_id: instance.id, subject_id: subject.id, teacher_id: compliantTeacherId };
+            const fakeId = 'temp-' + Date.now() + Math.random();
+            
+            tempLocalAllocations.push({ ...payload, id: fakeId } as UnitAllocation);
+            tempGlobalAllocations.push({ ...payload, id: fakeId } as UnitAllocation);
+            newInsertions.push(payload);
+            assignedCount++;
+
+            // Queue the notification
+            const teacherObj = teachers.find(t => t.id === compliantTeacherId);
+            if (teacherObj?.user_id) {
+                 newNotifications.push({
+                     user_id: teacherObj.user_id,
+                     title: 'New Class Auto-Assigned',
+                     message: `You have been auto-assigned to deliver ${subject.name} for cohort ${instance.name}.`
+                 });
+            }
+        }
+    }
+
+    if (newInsertions.length > 0) {
+        try {
+            await supabase.from('course_unit_allocations').insert(newInsertions);
+            if (newNotifications.length > 0) {
+                await supabase.from('notifications').insert(newNotifications);
+            }
+            setCurrentAllocations(tempLocalAllocations);
+            setGlobalAllocations(tempGlobalAllocations);
+            alert(`Success: ${assignedCount} units were safely auto-assigned.`);
+        } catch (error) {
+            console.error(error);
+            alert("Database error while saving auto-assignments.");
+        }
+    } else {
+        alert("No remaining units could be safely auto-assigned (Check staff qualifications, limits, and clashes).");
+    }
+    
+    setLoading(false);
+  };
+
   const handleRemove = async (subjectId: string, e: React.MouseEvent) => {
     e.stopPropagation(); 
     setProcessingSubjectId(subjectId);
@@ -263,7 +346,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       const existingAlloc = currentAllocations.find(a => a.subject_id === subjectId);
       if (existingAlloc && existingAlloc.id) {
         
-        // --- NEW: FIRE NOTIFICATION FOR REMOVAL BEFORE WE DELETE THE RECORD ---
         const assignedTeacher = teachers.find(t => t.id === existingAlloc.teacher_id);
         const subject = subjects.find(s => s.id === subjectId);
         if (assignedTeacher?.user_id && subject) {
@@ -316,15 +398,24 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500"><span className="font-bold text-blue-600">{instance.name}</span><span>•</span><span>{instance.delivery_mode}</span><span>•</span><span>{resolvedSubjects.length} Units</span></div>
           </div>
           <div className="flex gap-3">
-              <button onClick={handleClearCourse} className="px-3 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg font-bold text-xs transition-colors border border-red-200 flex items-center gap-1"><RotateCcw size={14} /> Clear All</button>
-              <button onClick={() => { onUpdate(); onClose(); }} className="text-slate-400 hover:text-slate-600 p-2"><X size={24} /></button>
+              {/* NEW AUTO ASSIGN BUTTON */}
+              <button onClick={handleAutoAssign} className="px-3 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-bold text-xs transition-colors border border-blue-200 flex items-center gap-1">
+                <Wand2 size={14} /> Auto Assign
+              </button>
+              
+              <button onClick={handleClearCourse} className="px-3 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg font-bold text-xs transition-colors border border-red-200 flex items-center gap-1">
+                <RotateCcw size={14} /> Clear All
+              </button>
+              <button onClick={() => { onUpdate(); onClose(); }} className="text-slate-400 hover:text-slate-600 p-2">
+                <X size={24} />
+              </button>
           </div>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
             <div className="w-1/2 flex flex-col border-r border-slate-200 bg-slate-50/50">
                 <div className="p-4 border-b border-slate-200 bg-white"><h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">1. Select Subject</h3></div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
                     {resolvedSubjects.map((subject, index) => {
                         const assignedId = getAssignedTeacherId(subject.id);
                         const assignedTeacher = teachers.find(t => t.id === assignedId);
@@ -365,7 +456,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                     <div className="relative"><Search size={16} className="absolute left-3 top-2.5 text-slate-400" /><input className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:bg-white focus:ring-2 focus:ring-blue-500" placeholder="Search teachers..." value={teacherSearch} onChange={e => setTeacherSearch(e.target.value)} /></div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
                     {filteredTeachers.map(teacher => {
                         const currentStatus = selectedSubjectId ? getTeacherStatus(teacher.id, selectedSubjectId) : null;
                         const isAvailable = currentStatus?.available ?? true;
