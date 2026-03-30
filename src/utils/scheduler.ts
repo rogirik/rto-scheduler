@@ -2,19 +2,28 @@ import type { CourseInstance, Course, Subject, AcademicYear } from '../services/
 
 const MAX_DATE_SEARCH_ITERATIONS = 365 * 3; 
 
-// THE FIX: Parses dates strictly in the user's local timezone (No 'Z' Zulu/UTC overrides)
 const parseAsLocal = (dateStr: string, timeStr = '00:00') => {
     if (!dateStr) return new Date();
     const [y, m, d] = dateStr.split('-').map(Number);
     const [h, min] = timeStr.split(':').map(Number);
-    // Month is 0-indexed in JS dates
     return new Date(y, m - 1, d, h, min, 0);
 };
+
+// THE FIX: Strict State Filtering to prevent cross-border holiday bleeding
+const IGNORED_TERM_PREFIXES = ['NSW -', 'QLD -', 'WA -', 'SA -', 'TAS -', 'NT -', 'ACT -'];
+const IGNORED_HOLIDAY_TAGS = ['(NSW)', '(QLD)', '(WA)', '(SA)', '(TAS)', '(NT)', '(ACT)'];
 
 // --- HELPER: CHECK HOLIDAYS ---
 const isHolidayByStr = (dateStr: string, holidays: any[] = []) => {
     if (!Array.isArray(holidays)) return false;
-    return holidays.some((h: any) => h.date === dateStr);
+    
+    // Strip out holidays from other states before checking
+    const applicableHolidays = holidays.filter(h => {
+        const name = h.name || '';
+        return !IGNORED_HOLIDAY_TAGS.some(tag => name.includes(tag));
+    });
+
+    return applicableHolidays.some((h: any) => h.date === dateStr);
 };
 
 // --- HELPER: CHECK TERM DATES ---
@@ -22,7 +31,13 @@ const isWithinTerm = (date: Date, terms: any[] = []) => {
     if (!Array.isArray(terms)) return false;
     const checkTime = date.getTime(); 
     
-    return terms.some((term: any) => { 
+    // Strip out school terms from other states before checking
+    const applicableTerms = terms.filter(term => {
+        const name = term.name || '';
+        return !IGNORED_TERM_PREFIXES.some(prefix => name.startsWith(prefix));
+    });
+
+    return applicableTerms.some((term: any) => { 
         const s = term.start || term.startDate;
         const e = term.end || term.endDate;
         
@@ -55,7 +70,6 @@ export const generateAllEventsForInstance = (
     subjects: Subject[],
     teachers: any[]
 ) => {
-    // 1. Validate Inputs
     const rawTemplate = template as any;
     const seqSubjects = rawTemplate?.sequenced_subjects || rawTemplate?.sequencedSubjects;
 
@@ -71,13 +85,11 @@ export const generateAllEventsForInstance = (
     
     let currentDate = parseAsLocal(instance.start_date, startTime);
     
-    // 2. Map Database Years for Quick Lookup
     const yearsMap: Record<string, AcademicYear> = {};
     if (Array.isArray(academicYears)) {
         academicYears.forEach(y => yearsMap[String(y.id)] = y);
     }
 
-    // 3. Iterate through Subjects
     for (const subjectItem of seqSubjects) {
         const subjectId = typeof subjectItem === 'string' ? subjectItem : subjectItem.subjectId || subjectItem.id;
         const subject = subjects.find(s => s.id === subjectId);
@@ -91,10 +103,9 @@ export const generateAllEventsForInstance = (
             let foundRegularDate: Date | null = null;
             let searchDate = new Date(currentDate);
 
-            // 4. Find Next Valid Date
             for (let i = 0; i < MAX_DATE_SEARCH_ITERATIONS; i++) {
-                const dayOfWeek = searchDate.getDay(); // Local Day
-                const y = searchDate.getFullYear();    // Local Year
+                const dayOfWeek = searchDate.getDay(); 
+                const y = searchDate.getFullYear();    
                 const yearData = yearsMap[y.toString()];
 
                 if (
@@ -107,7 +118,6 @@ export const generateAllEventsForInstance = (
                     foundRegularDate = new Date(searchDate);
                     break;
                 }
-                // Step forward strictly by 1 local day
                 searchDate.setDate(searchDate.getDate() + 1);
             }
 
@@ -120,7 +130,6 @@ export const generateAllEventsForInstance = (
 
             const hoursThisSession = Math.min(hoursToSchedule, hoursPerDay);
             
-            // Set strictly local time bounds
             const start = new Date(sessionDate); 
             start.setHours(startHour, startMinute, 0, 0);
             
