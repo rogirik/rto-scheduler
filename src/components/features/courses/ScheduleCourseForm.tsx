@@ -36,7 +36,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Props) =
     template_id: '',
     start_date: new Date().toISOString().split('T')[0],
     end_date: '',
-    start_time: '09:00',
+    start_time: '09:00', // Default start time
     hours_per_day: 7,
     break_minutes: 30,
     delivery_mode: 'F2F', 
@@ -251,16 +251,17 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Props) =
                 </section>
 
                 <div className="p-6 bg-blue-50 border border-blue-100 rounded-2xl space-y-4">
+                    {/* HERE IS THE FIX: 3-Column Grid for Date, Time, and Completion */}
                     <div className="grid grid-cols-3 gap-4">
-                        <div className="col-span-1">
-                            <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Commencement</label>
+                        <div>
+                            <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Start Date</label>
                             <input type="date" className="w-full p-2 border border-blue-200 rounded-lg font-bold" value={formData.start_date} onChange={e => setFormData({...formData, start_date: e.target.value})}/>
                         </div>
-                        <div className="col-span-1">
+                        <div>
                             <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Start Time</label>
                             <input type="time" className="w-full p-2 border border-blue-200 rounded-lg font-bold" value={formData.start_time} onChange={e => setFormData({...formData, start_time: e.target.value})}/>
                         </div>
-                        <div className="col-span-1">
+                        <div>
                             <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Completion (Est.)</label>
                             <div className="p-2 bg-white/50 border border-blue-200 rounded-lg font-bold text-blue-900">{formData.end_date || '...'}</div>
                         </div>
