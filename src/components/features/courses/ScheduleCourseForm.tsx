@@ -186,11 +186,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Props) =
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden">
         
-  {/* Add this massive banner right here */}
-  <div style={{ backgroundColor: 'red', color: 'white', fontSize: '40px', padding: '20px', textAlign: 'center', zIndex: 9999 }}>
-     IF YOU CAN SEE THIS, THE FILE IS CONNECTED!
-  </div>
-        
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
