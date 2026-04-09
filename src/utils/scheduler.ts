@@ -2,6 +2,7 @@ import type { CourseInstance, Course, Subject, AcademicYear } from '../services/
 
 const MAX_DATE_SEARCH_ITERATIONS = 365 * 3; 
 
+<<<<<<< HEAD
 const parseAsLocal = (dateStr: string, timeStr = '09:00') => {
     if (!dateStr) return new Date();
     const cleanDate = dateStr.split('T')[0]; 
@@ -16,36 +17,89 @@ const IGNORED_HOLIDAY_TAGS = ['(NSW)', '(QLD)', '(WA)', '(SA)', '(TAS)', '(NT)',
 
 const isHolidayByStr = (dateStr: string, holidays: any[] = []) => {
     if (!Array.isArray(holidays)) return false;
+=======
+const parseAsLocal = (dateStr: string, timeStr = '00:00') => {
+    if (!dateStr) return new Date();
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const [h, min] = timeStr.split(':').map(Number);
+    return new Date(y, m - 1, d, h, min, 0);
+};
+
+// THE FIX: Strict State Filtering to prevent cross-border holiday bleeding
+const IGNORED_TERM_PREFIXES = ['NSW -', 'QLD -', 'WA -', 'SA -', 'TAS -', 'NT -', 'ACT -'];
+const IGNORED_HOLIDAY_TAGS = ['(NSW)', '(QLD)', '(WA)', '(SA)', '(TAS)', '(NT)', '(ACT)'];
+
+// --- HELPER: CHECK HOLIDAYS ---
+const isHolidayByStr = (dateStr: string, holidays: any[] = []) => {
+    if (!Array.isArray(holidays)) return false;
+    
+    // Strip out holidays from other states before checking
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
     const applicableHolidays = holidays.filter(h => {
         const name = h.name || '';
         return !IGNORED_HOLIDAY_TAGS.some(tag => name.includes(tag));
     });
+<<<<<<< HEAD
     return applicableHolidays.some((h: any) => h.date === dateStr);
 };
 
 const isWithinTerm = (date: Date, terms: any[] = []) => { 
     if (!Array.isArray(terms)) return false;
     const checkTime = date.getTime(); 
+=======
+
+    return applicableHolidays.some((h: any) => h.date === dateStr);
+};
+
+// --- HELPER: CHECK TERM DATES ---
+const isWithinTerm = (date: Date, terms: any[] = []) => { 
+    if (!Array.isArray(terms)) return false;
+    const checkTime = date.getTime(); 
+    
+    // Strip out school terms from other states before checking
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
     const applicableTerms = terms.filter(term => {
         const name = term.name || '';
         return !IGNORED_TERM_PREFIXES.some(prefix => name.startsWith(prefix));
     });
+<<<<<<< HEAD
     return applicableTerms.some((term: any) => { 
         const s = term.start || term.startDate;
         const e = term.end || term.endDate;
         if (!s || !e) return false;
         const startTime = parseAsLocal(s).getTime(); 
         const endTime = parseAsLocal(e, '23:59').getTime(); 
+=======
+
+    return applicableTerms.some((term: any) => { 
+        const s = term.start || term.startDate;
+        const e = term.end || term.endDate;
+        
+        if (!s || !e) return false;
+
+        const startTime = parseAsLocal(s).getTime(); 
+        const endTime = parseAsLocal(e, '23:59').getTime(); // End of the day
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
         return checkTime >= startTime && checkTime <= endTime; 
     }); 
 };
 
+<<<<<<< HEAD
 const isNonWorkingDay = (date: Date, holidays: any[] = []) => { 
     const dayOfWeek = date.getDay(); 
+=======
+// --- HELPER: CHECK NON-WORKING DAYS ---
+const isNonWorkingDay = (date: Date, holidays: any[] = []) => { 
+    const dayOfWeek = date.getDay(); // Local day
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
     const dateStr = `${y}-${m}-${d}`;
+<<<<<<< HEAD
+=======
+    
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
     if (isHolidayByStr(dateStr, holidays)) return true; 
     if (dayOfWeek === 0) return true; // Sunday default exclusion
     return false; 
@@ -97,11 +151,19 @@ export const generateAllEventsForInstance = (
                 const y = searchDate.getFullYear();    
                 const yearData = yearsMap[y.toString()];
 
+<<<<<<< HEAD
                 // NORMAL BEHAVIOR: Auto-engine strictly dodges everything.
                 if (
                     yearData && 
                     allowedDays.includes(dayOfWeek) && 
                     isWithinTerm(searchDate, yearData.terms || []) && 
+=======
+                if (
+                    yearData && 
+                    yearData.terms && 
+                    allowedDays.includes(dayOfWeek) && 
+                    isWithinTerm(searchDate, yearData.terms) && 
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
                     !isNonWorkingDay(searchDate, yearData.holidays || [])
                 ) {
                     foundRegularDate = new Date(searchDate);
@@ -140,4 +202,8 @@ export const generateAllEventsForInstance = (
         }
     }
     return events;
+<<<<<<< HEAD
 };
+=======
+};
+>>>>>>> a3ac9f7cd7dfab804dce4806af077264aec6fdc7
