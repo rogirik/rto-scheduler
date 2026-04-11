@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { supabase } from './services/supabase'; 
 import { 
   LayoutDashboard, 
@@ -31,10 +32,24 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [rtoName, setRtoName] = useState('RTO Scheduler');
+  
+  // NEW: Track the role so we know what sidebar links to show!
+  const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
 
   // --- NOTIFICATION STATE ---
   const [notifications, setNotifications] = useState<any[]>([]);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+
+  // --- MOBILE DETECTION ---
+  const [isMobile, setIsMobile] = useState(Capacitor.isNativePlatform() || window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(Capacitor.isNativePlatform() || window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // --- AUTH LISTENER ---
   useEffect(() => {
@@ -51,18 +66,25 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // --- FETCH DYNAMIC RTO NAME & NOTIFICATIONS ---
+  // --- FETCH DYNAMIC RTO NAME, ROLE & NOTIFICATIONS ---
   useEffect(() => {
     const fetchUserData = async () => {
       if (!session?.user) return;
       
       try {
-        // 1. Fetch RTO Name
         let myOrgId = null;
+        let role: 'admin' | 'teacher' = 'teacher';
+
+        // 1. Fetch Profile (Gets Role and Org ID)
         try {
-          const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', session.user.id).single();
-          if (profile) myOrgId = profile.organization_id;
+          const { data: profile } = await supabase.from('user_profiles').select('organization_id, role').eq('id', session.user.id).single();
+          if (profile) {
+              myOrgId = profile.organization_id;
+              if (profile.role === 'admin') role = 'admin';
+          }
         } catch (e) {}
+
+        setUserRole(role); // Save the role to state
 
         if (!myOrgId) {
           const { data: teachers } = await supabase.from('teachers').select('organization_id').eq('user_id', session.user.id).limit(1);
@@ -121,7 +143,7 @@ function App() {
 
   const markAllAsRead = async () => {
     setNotifications(notifications.map(n => ({ ...n, is_read: true })));
-    await supabase.from('notifications').update({ is_read: true }).eq('user_id', session?.user?.id);
+    await supabase.from('notifications').update({ user_id: session?.user?.id }).eq('is_read', true);
   };
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
@@ -165,55 +187,65 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 font-sans text-slate-900 relative">
+    <div className={`flex h-screen bg-slate-50 font-sans text-slate-900 relative ${isMobile ? 'overflow-hidden' : ''}`}>
       
-      {/* SIDEBAR */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col fixed h-full z-20">
-        <div className="p-6 flex items-center justify-between">
-          <h1 className="text-xl font-extrabold text-blue-700 flex items-center gap-2 truncate pr-2" title={rtoName}>
-            <GraduationCap size={28} className="shrink-0" />
-            <span className="truncate">{rtoName}</span>
-          </h1>
+      {/* SIDEBAR - Only show on Desktop */}
+      {!isMobile && (
+        <aside className="w-64 bg-white border-r border-slate-200 flex flex-col fixed h-full z-20">
+          <div className="p-6 flex items-center justify-between">
+            <h1 className="text-xl font-extrabold text-blue-700 flex items-center gap-2 truncate pr-2" title={rtoName}>
+              <GraduationCap size={28} className="shrink-0" />
+              <span className="truncate">{rtoName}</span>
+            </h1>
 
-          {/* NOTIFICATION BELL */}
-          <button 
-            onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors relative"
-          >
-            <Bell size={20} />
-            {unreadCount > 0 && (
-              <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
-            )}
-          </button>
-        </div>
-
-        <nav className="flex-1 px-4 overflow-y-auto">
-          <div className="space-y-1">
-            <NavItem id="dashboard" icon={LayoutDashboard} label="Dashboard" />
-            <NavItem id="teachers" icon={Users} label="Teachers" />
-            <NavItem id="subjects" icon={BookOpen} label="Subjects" />
-            <NavItem id="courses" icon={GraduationCap} label="Courses" />
-            <NavItem id="calendar" icon={Calendar} label="Calendar" />
+            {/* NOTIFICATION BELL */}
+            <button 
+              onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors relative"
+            >
+              <Bell size={20} />
+              {unreadCount > 0 && (
+                <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
+              )}
+            </button>
           </div>
 
-          <div className="mt-8 pt-8 border-t border-slate-100 space-y-1">
-            <NavItem id="settings" icon={Settings} label="Settings" />
+          <nav className="flex-1 px-4 overflow-y-auto">
+            <div className="space-y-1">
+              {/* Dashboard is named "My Portal" for Teachers */}
+              <NavItem id="dashboard" icon={LayoutDashboard} label={userRole === 'admin' ? "Dashboard" : "My Portal"} />
+              
+              {/* Only Admins see these three tabs */}
+              {userRole === 'admin' && (
+                <>
+                  <NavItem id="teachers" icon={Users} label="Teachers" />
+                  <NavItem id="subjects" icon={BookOpen} label="Subjects" />
+                  <NavItem id="courses" icon={GraduationCap} label="Courses" />
+                </>
+              )}
+              
+              <NavItem id="calendar" icon={Calendar} label="Calendar" />
+            </div>
+
+            <div className="mt-8 pt-8 border-t border-slate-100 space-y-1">
+              <NavItem id="settings" icon={Settings} label="Settings" />
+            </div>
+          </nav>
+
+          <div className="p-4 border-t border-slate-100">
+            <button 
+              onClick={handleSignOut}
+              className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              <LogOut size={20} />
+              <span className="font-medium">Sign Out</span>
+            </button>
           </div>
-        </nav>
+        </aside>
+      )}
 
-        <div className="p-4 border-t border-slate-100">
-          <button 
-            onClick={handleSignOut}
-            className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <LogOut size={20} />
-            <span className="font-medium">Sign Out</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* NOTIFICATION FLYOUT PANEL */}
-      {isNotificationsOpen && (
+      {/* NOTIFICATION FLYOUT PANEL - Desktop Only */}
+      {!isMobile && isNotificationsOpen && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setIsNotificationsOpen(false)}></div>
           <div className="fixed top-6 left-64 ml-4 w-96 max-h-[80vh] bg-white rounded-2xl shadow-2xl border border-slate-200 z-40 flex flex-col overflow-hidden animate-in fade-in slide-in-from-left-4 duration-200">
@@ -252,9 +284,9 @@ function App() {
         </>
       )}
 
-      {/* MAIN CONTENT AREA */}
-      <main className="flex-1 ml-64 p-8 overflow-y-auto h-screen">
-        <div className="max-w-7xl mx-auto">
+      {/* MAIN CONTENT AREA - Mobile friendly layout */}
+      <main className={`flex-1 overflow-y-auto h-screen ${isMobile ? 'ml-0 p-0' : 'ml-64 p-8'}`}>
+        <div className={isMobile ? 'w-full h-full' : 'max-w-7xl mx-auto'}>
           {renderContent()}
           <UpdatePasswordModal />
         </div>

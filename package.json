@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.0",
     "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0",
     "@hello-pangea/dnd": "^16.6.0",
     "@supabase/supabase-js": "^2.39.3",
     "autoprefixer": "^10.4.17",
