@@ -11,6 +11,14 @@ const parseAsLocal = (dateStr: string, timeStr = '09:00') => {
     return new Date(y, m - 1, d, h || 0, min || 0, 0);
 };
 
+// HELPER: Get clean YYYY-MM-DD string for exact matching
+const getLocalIsoString = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 const IGNORED_TERM_PREFIXES = ['NSW -', 'QLD -', 'WA -', 'SA -', 'TAS -', 'NT -', 'ACT -'];
 const IGNORED_HOLIDAY_TAGS = ['(NSW)', '(QLD)', '(WA)', '(SA)', '(TAS)', '(NT)', '(ACT)'];
 
@@ -42,10 +50,7 @@ const isWithinTerm = (date: Date, terms: any[] = []) => {
 
 const isNonWorkingDay = (date: Date, holidays: any[] = []) => { 
     const dayOfWeek = date.getDay(); 
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    const dateStr = `${y}-${m}-${d}`;
+    const dateStr = getLocalIsoString(date);
     if (isHolidayByStr(dateStr, holidays)) return true; 
     if (dayOfWeek === 0) return true; // Sunday default exclusion
     return false; 
@@ -57,7 +62,8 @@ export const generateAllEventsForInstance = (
     academicYears: AcademicYear[], 
     template: Course | undefined, 
     subjects: Subject[],
-    teachers: any[]
+    teachers: any[],
+    scheduleOverrides: any[] = [] // NEW: Added optional overrides table parameter
 ) => {
     const rawTemplate = template as any;
     const seqSubjects = rawTemplate?.sequenced_subjects || rawTemplate?.sequencedSubjects;
@@ -79,6 +85,20 @@ export const generateAllEventsForInstance = (
         academicYears.forEach(y => yearsMap[String(y.id)] = y);
     }
 
+    // --- NEW: Compile Master Override Lists ---
+    // Safely parse the instance JSONB fields (in case they are stored as strings)
+    const safeParse = (data: any) => Array.isArray(data) ? data : (typeof data === 'string' ? JSON.parse(data || '[]') : []);
+    
+    const manualAdds = [
+        ...safeParse(instance.additional_dates),
+        ...scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date)
+    ];
+
+    const manualRemoves = [
+        ...safeParse(instance.excluded_dates),
+        ...scheduleOverrides.filter(o => o.action_type === 'remove' && o.instance_id === instance.id).map(o => o.override_date)
+    ];
+
     for (const subjectItem of seqSubjects) {
         const subjectId = typeof subjectItem === 'string' ? subjectItem : subjectItem.subjectId || subjectItem.id;
         const subject = subjects.find(s => s.id === subjectId);
@@ -96,17 +116,28 @@ export const generateAllEventsForInstance = (
                 const dayOfWeek = searchDate.getDay(); 
                 const y = searchDate.getFullYear();    
                 const yearData = yearsMap[y.toString()];
+                const dateStr = getLocalIsoString(searchDate);
 
-                // NORMAL BEHAVIOR: Auto-engine strictly dodges everything.
+                // 1. Is this date explicitly banned?
+                if (manualRemoves.includes(dateStr)) {
+                    searchDate.setDate(searchDate.getDate() + 1);
+                    continue; // Skip immediately
+                }
+
+                // 2. Is this date explicitly forced OR a valid regular date?
                 if (
-                    yearData && 
-                    allowedDays.includes(dayOfWeek) && 
-                    isWithinTerm(searchDate, yearData.terms || []) && 
-                    !isNonWorkingDay(searchDate, yearData.holidays || [])
+                    manualAdds.includes(dateStr) || // Forced dates bypass term/holiday checks entirely
+                    (
+                        yearData && 
+                        allowedDays.includes(dayOfWeek) && 
+                        isWithinTerm(searchDate, yearData.terms || []) && 
+                        !isNonWorkingDay(searchDate, yearData.holidays || [])
+                    )
                 ) {
                     foundRegularDate = new Date(searchDate);
                     break;
                 }
+                
                 searchDate.setDate(searchDate.getDate() + 1);
             }
 
