@@ -11,7 +11,6 @@ const parseAsLocal = (dateStr: string, timeStr = '09:00') => {
     return new Date(y, m - 1, d, h || 0, min || 0, 0);
 };
 
-// HELPER: Get clean YYYY-MM-DD string for exact matching
 const getLocalIsoString = (date: Date) => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -19,16 +18,38 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// --- FORTIFIED NORMALIZER: Forces strict zero-padding (e.g. 2026-7-4 becomes 2026-07-04) ---
+// --- THE FIX: Universal Date Normalizer ---
+// Converts DD/MM/YYYY, YYYY/MM/DD, and Timestamps all into strict YYYY-MM-DD
 const normalizeToYYYYMMDD = (arr: any[]) => {
     return arr.map(item => {
         if (!item) return '';
-        const str = typeof item === 'object' && item.date ? String(item.date) : String(item);
-        const rawDate = str.split('T')[0];
-        const parts = rawDate.split('-');
-        if (parts.length >= 3) {
-            return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+        let rawDate = typeof item === 'object' ? (item.date || item.start || item.override_date || String(item)) : String(item);
+        
+        // Strip timestamps
+        rawDate = rawDate.split('T')[0]; 
+
+        // Handle Australian Slashes (DD/MM/YYYY)
+        if (rawDate.includes('/')) {
+            const p = rawDate.split('/');
+            if (p.length === 3) {
+                const y = p[2].length === 4 ? p[2] : p[0];
+                const m = p[2].length === 4 ? p[1] : p[1];
+                const d = p[2].length === 4 ? p[0] : p[2];
+                return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+            }
         }
+
+        // Handle Dashes (YYYY-MM-DD or DD-MM-YYYY)
+        if (rawDate.includes('-')) {
+            const p = rawDate.split('-');
+            if (p.length === 3) {
+                const y = p[0].length === 4 ? p[0] : p[2];
+                const m = p[1];
+                const d = p[0].length === 4 ? p[2] : p[0];
+                return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+            }
+        }
+
         return rawDate;
     }).filter(Boolean);
 };
@@ -67,7 +88,7 @@ export const generateAllEventsForInstance = (
     template: Course | undefined, 
     subjects: Subject[],
     teachers: any[],
-    scheduleOverrides: any[] = [] // Receives data from the DB
+    scheduleOverrides: any[] = [] 
 ) => {
     const rawTemplate = template as any;
     const seqSubjects = rawTemplate?.sequenced_subjects || rawTemplate?.sequencedSubjects;
@@ -85,11 +106,13 @@ export const generateAllEventsForInstance = (
 
     const safeParse = (data: any) => Array.isArray(data) ? data : (typeof data === 'string' ? JSON.parse(data || '[]') : []);
     
+    // Compile and Normalize all manual additions
     const manualAdds = normalizeToYYYYMMDD([
         ...safeParse(instance.additional_dates),
         ...scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date)
     ]);
 
+    // Compile and Normalize all manual exclusions
     const manualRemoves = normalizeToYYYYMMDD([
         ...safeParse(instance.excluded_dates),
         ...scheduleOverrides.filter(o => o.action_type === 'remove' && o.instance_id === instance.id).map(o => o.override_date)
