@@ -19,6 +19,16 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
+// --- THE FIX: Normalizes any date format (Timestamp or String) to strict YYYY-MM-DD ---
+const normalizeToYYYYMMDD = (arr: any[]) => {
+    return arr.map(item => {
+        if (!item) return '';
+        // Handle if it's an object { date: "..." } or a raw string
+        const str = typeof item === 'object' && item.date ? String(item.date) : String(item);
+        return str.split('T')[0]; // Brutally chop off any 'T00:00:00.000Z' garbage
+    }).filter(Boolean);
+};
+
 const IGNORED_TERM_PREFIXES = ['NSW -', 'QLD -', 'WA -', 'SA -', 'TAS -', 'NT -', 'ACT -'];
 const IGNORED_HOLIDAY_TAGS = ['(NSW)', '(QLD)', '(WA)', '(SA)', '(TAS)', '(NT)', '(ACT)'];
 
@@ -63,7 +73,7 @@ export const generateAllEventsForInstance = (
     template: Course | undefined, 
     subjects: Subject[],
     teachers: any[],
-    scheduleOverrides: any[] = [] // NEW: Added optional overrides table parameter
+    scheduleOverrides: any[] = []
 ) => {
     const rawTemplate = template as any;
     const seqSubjects = rawTemplate?.sequenced_subjects || rawTemplate?.sequencedSubjects;
@@ -85,19 +95,18 @@ export const generateAllEventsForInstance = (
         academicYears.forEach(y => yearsMap[String(y.id)] = y);
     }
 
-    // --- NEW: Compile Master Override Lists ---
-    // Safely parse the instance JSONB fields (in case they are stored as strings)
+    // --- APPLY THE NORMALIZER TO ALL OVERRIDES ---
     const safeParse = (data: any) => Array.isArray(data) ? data : (typeof data === 'string' ? JSON.parse(data || '[]') : []);
     
-    const manualAdds = [
+    const manualAdds = normalizeToYYYYMMDD([
         ...safeParse(instance.additional_dates),
         ...scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date)
-    ];
+    ]);
 
-    const manualRemoves = [
+    const manualRemoves = normalizeToYYYYMMDD([
         ...safeParse(instance.excluded_dates),
         ...scheduleOverrides.filter(o => o.action_type === 'remove' && o.instance_id === instance.id).map(o => o.override_date)
-    ];
+    ]);
 
     for (const subjectItem of seqSubjects) {
         const subjectId = typeof subjectItem === 'string' ? subjectItem : subjectItem.subjectId || subjectItem.id;
@@ -121,12 +130,12 @@ export const generateAllEventsForInstance = (
                 // 1. Is this date explicitly banned?
                 if (manualRemoves.includes(dateStr)) {
                     searchDate.setDate(searchDate.getDate() + 1);
-                    continue; // Skip immediately
+                    continue; 
                 }
 
                 // 2. Is this date explicitly forced OR a valid regular date?
                 if (
-                    manualAdds.includes(dateStr) || // Forced dates bypass term/holiday checks entirely
+                    manualAdds.includes(dateStr) || 
                     (
                         yearData && 
                         allowedDays.includes(dayOfWeek) && 
