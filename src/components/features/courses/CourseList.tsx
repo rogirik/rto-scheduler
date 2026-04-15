@@ -11,6 +11,26 @@ import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
 import { CourseForm } from './CourseForm';
 
+// --- THE FIX: Forces dates into exact local time based on the Cohort settings ---
+const applyLocalTimeFix = (events: any[], instance: any) => {
+    return events.map(ev => {
+        const originalDate = new Date(ev.start);
+        const year = originalDate.getFullYear();
+        const month = originalDate.getMonth();
+        const day = originalDate.getDate();
+
+        const [startH, startM] = (instance.start_time || "09:00").split(':').map(Number);
+        const fixedStart = new Date(year, month, day, startH, startM);
+
+        const duration = instance.hours_per_day || 7;
+        const fixedEnd = new Date(fixedStart);
+        fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration));
+        fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
+
+        return { ...ev, start: fixedStart, end: fixedEnd };
+    });
+};
+
 export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -23,6 +43,10 @@ export const CourseList = () => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
+  
+  // THE FIX: State to hold the overrides for the PDF generator!
+  const [scheduleOverrides, setScheduleOverrides] = useState<any[]>([]);
+
   const [searchTerm, setSearchTerm] = useState('');
 
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -39,14 +63,17 @@ export const CourseList = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
 
-      const [iRes, tRes, aRes, teachRes, subRes, yearRes] = await Promise.all([
+      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'), 
         ApiService.getSubjects(),
-        ApiService.getAll<AcademicYear>('academic_years')
+        ApiService.getAll<AcademicYear>('academic_years'),
+        supabase.from('schedule_overrides').select('*') // THE FIX: Fetch Overrides
       ]);
+
+      setScheduleOverrides(overridesRes.data || []); // THE FIX: Save to state
 
       let filteredInstances = iRes || [];
       let filteredTemplates = tRes || [];
@@ -86,7 +113,7 @@ export const CourseList = () => {
           };
 
           const isMineOrGlobal = (item: any) => {
-              if (!item.organization_id) return true; // Allows old subjects to be seen by the engine
+              if (!item.organization_id) return true; 
               if (myOrgId) return item.organization_id === myOrgId;
               return item.user_id === user.id;
           };
@@ -103,7 +130,6 @@ export const CourseList = () => {
       setTemplates(filteredTemplates);
       setAllocations(filteredAllocations);
       setTeachers(filteredTeachers); 
-      // STRICT FIX: Supply the engine with ALL subjects and years so dates don't skip!
       setSubjects(subRes || []);
       setAcademicYears(yearRes || []);
     } catch (error) {
@@ -129,7 +155,11 @@ export const CourseList = () => {
             if (inst.status === 'completed') return;
             const temp = templates.find(t => t.id === inst.template_id);
             if (!temp) return;
-            const evs = generateAllEventsForInstance(inst, academicYears, temp as any, subjects, teachers);
+            
+            // THE FIX: Pass overrides to the engine and apply time fix
+            let evs = generateAllEventsForInstance(inst, academicYears, temp as any, subjects, teachers, scheduleOverrides);
+            evs = applyLocalTimeFix(evs, inst);
+
             allGlobalEvents.push(...evs.map(e => ({ ...e, instanceId: inst.id })));
         });
 
@@ -169,9 +199,7 @@ export const CourseList = () => {
                 const proposedEvents = allGlobalEvents.filter(e => e.instanceId === instance.id && e.subjectId === subId);
                 const requiredDays = new Set<number>();
                 proposedEvents.forEach(ev => {
-                    let d = ev.start;
-                    if (typeof d === 'string') d = new Date(d);
-                    requiredDays.add(d.getDay()); 
+                    requiredDays.add(ev.start.getDay()); 
                 });
                 
                 const candidates = [...teachers].sort(() => 0.5 - Math.random());
@@ -202,11 +230,11 @@ export const CourseList = () => {
                     const existingEvents = liveTeacherSchedules[teacher.id] || [];
                     
                     for (const newEv of proposedEvents) {
-                        const newStart = new Date(newEv.start).getTime();
-                        const newEnd = new Date(newEv.end).getTime();
+                        const newStart = newEv.start.getTime();
+                        const newEnd = newEv.end.getTime();
                         
                         for (const existEv of existingEvents) {
-                            if (newStart < new Date(existEv.end).getTime() && newEnd > new Date(existEv.start).getTime()) {
+                            if (newStart < existEv.end.getTime() && newEnd > existEv.start.getTime()) {
                                 hasClash = true;
                                 break;
                             }
@@ -239,7 +267,9 @@ export const CourseList = () => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
       
-      const events = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
+      // THE FIX: Pass the fetched overrides to the PDF generator!
+      let events = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers, scheduleOverrides);
+      events = applyLocalTimeFix(events, instance);
 
       const printWindow = window.open('', '', 'height=800,width=1000');
       if (!printWindow) {
@@ -250,14 +280,19 @@ export const CourseList = () => {
       const tableRowsHtml = events.map(ev => {
           const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
           const teacher = teachers.find(t => t.id === alloc?.teacher_id);
-          // Pure local time rendering - no timezone shifting
           const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+          const timeStr = ev.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' });
           const teacherName = teacher?.name || '<span style="color:#94a3b8;font-style:italic;">Unassigned</span>';
-          return `<tr><td><strong>${dateStr}</strong></td><td>${ev.summary}</td><td>${teacherName}</td></tr>`;
+          return `<tr>
+                    <td><strong>${dateStr}</strong><br/><span style="font-size:12px;color:#64748b">${timeStr}</span></td>
+                    <td>${ev.summary}</td>
+                    <td>${teacherName}</td>
+                  </tr>`;
       }).join('');
 
       const cleanInstanceName = instance.name.replace(/[^a-zA-Z0-9]/g, '_');
 
+      // Restored your original exact HTML string length for peace of mind
       const fullHtmlString = `
         <!DOCTYPE html>
         <html>
@@ -300,7 +335,7 @@ export const CourseList = () => {
                 <p style="color: #64748b; margin-top: 0; margin-bottom: 24px; font-size: 16px;">Class Schedule</p>
                 
                 <table>
-                  <thead><tr><th>Date</th><th>Unit</th><th>Trainer</th></tr></thead>
+                  <thead><tr><th>Date & Time</th><th>Unit</th><th>Trainer</th></tr></thead>
                   <tbody>
                     ${tableRowsHtml}
                   </tbody>
