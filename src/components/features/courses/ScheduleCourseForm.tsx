@@ -33,12 +33,10 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     hours_per_day: 6,
     delivery_mode: 'Blended',
     allowed_days: [1, 2, 3, 4, 5],
-    additional_dates: [] as string[],
-    excluded_dates: [] as string[]
+    additional_dates: [] as string[]
   });
 
   const [newAddDate, setNewAddDate] = useState('');
-  const [newExcludeDate, setNewExcludeDate] = useState('');
 
   useEffect(() => {
     const fetchDependencies = async () => {
@@ -60,8 +58,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           hours_per_day: initialData.hours_per_day || 6,
           delivery_mode: initialData.delivery_mode || 'Blended',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
-          additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : [],
-          excluded_dates: Array.isArray(initialData.excluded_dates) ? initialData.excluded_dates : []
+          additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : []
         });
       }
     };
@@ -78,18 +75,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       
       const timer = setTimeout(() => {
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
-          
-          // Use the exact same engine the calendar uses
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
-          const events = generateAllEventsForInstance(
-              mockInstance, 
-              academicYears, 
-              selectedTemplate, 
-              subjects, 
-              [], // No teachers needed for preview
-              []  // Overrides are fed via formData
-          );
-          
+          const events = generateAllEventsForInstance(mockInstance, academicYears, selectedTemplate, subjects, [], []);
           setPreviewEvents(events);
           setCalculating(false);
       }, 300);
@@ -114,19 +101,10 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       setNewAddDate('');
   };
 
-  const handleAddExcludeDate = () => {
-      if (!newExcludeDate) return;
-      if (!formData.excluded_dates.includes(newExcludeDate)) {
-          setFormData(prev => ({ ...prev, excluded_dates: [...prev.excluded_dates, newExcludeDate].sort() }));
-      }
-      setNewExcludeDate('');
-  };
-
-  const removeDate = (type: 'add' | 'exclude', dateToRemove: string) => {
+  const removeDate = (dateToRemove: string) => {
       setFormData(prev => ({
           ...prev,
-          additional_dates: type === 'add' ? prev.additional_dates.filter(d => d !== dateToRemove) : prev.additional_dates,
-          excluded_dates: type === 'exclude' ? prev.excluded_dates.filter(d => d !== dateToRemove) : prev.excluded_dates
+          additional_dates: prev.additional_dates.filter(d => d !== dateToRemove)
       }));
   };
 
@@ -136,23 +114,75 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
     try {
         const payload = {
-            ...formData,
+            name: formData.name,
+            template_id: formData.template_id,
+            start_date: formData.start_date,
+            start_time: formData.start_time,
+            hours_per_day: formData.hours_per_day,
+            delivery_mode: formData.delivery_mode,
+            allowed_days: formData.allowed_days,
+            additional_dates: formData.additional_dates,
             status: 'active'
         };
 
+        let instanceId = initialData?.id;
+
         if (initialData) {
-            await supabase.from('course_instances').update(payload).eq('id', initialData.id);
+            await supabase.from('course_instances').update(payload).eq('id', instanceId);
         } else {
             const { data: { user } } = await supabase.auth.getUser();
-            await supabase.from('course_instances').insert([{ ...payload, user_id: user?.id }]);
+            const { data: newInstance, error } = await supabase
+                .from('course_instances')
+                .insert([{ ...payload, user_id: user?.id }])
+                .select()
+                .single();
+                
+            if (error) throw error;
+            instanceId = newInstance.id;
         }
+
+        if (instanceId) {
+            // Delete old added dates for this cohort
+            await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId).eq('action_type', 'add');
+
+            const overridesToInsert = formData.additional_dates.map(date => ({
+                instance_id: instanceId,
+                override_date: date,
+                action_type: 'add'
+            }));
+
+            if (overridesToInsert.length > 0) {
+                await supabase.from('schedule_overrides').insert(overridesToInsert);
+            }
+        }
+
         onSuccess();
     } catch (error) {
+        console.error(error);
         alert("Failed to save schedule.");
     } finally {
         setLoading(false);
     }
   };
+
+  // --- CALCULATE STATS ---
+  const selectedTemplate = templates.find(t => t.id === formData.template_id);
+  const seqSubjects = (selectedTemplate as any)?.sequenced_subjects || (selectedTemplate as any)?.sequencedSubjects || [];
+  let totalHours = 0;
+  seqSubjects.forEach((subItem: any) => {
+      const subId = typeof subItem === 'string' ? subItem : subItem.subjectId || subItem.id;
+      const sub = subjects.find(s => s.id === subId);
+      if (sub && sub.hours) totalHours += sub.hours;
+      else totalHours += 40;
+  });
+  
+  const sessionsRequired = Math.ceil(totalHours / (formData.hours_per_day || 6));
+  
+  let estimatedCompletion = '';
+  if (previewEvents.length > 0) {
+      const lastEvent = previewEvents[previewEvents.length - 1];
+      estimatedCompletion = lastEvent.start.toLocaleDateString('en-CA'); // Formats as YYYY-MM-DD for the input
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -221,14 +251,25 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                         </div>
                     </div>
 
-                    <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 flex gap-4">
-                        <div className="flex-1">
-                            <label className="block text-xs font-bold text-blue-800 uppercase mb-1">Start Date</label>
-                            <input required type="date" className="w-full border border-slate-300 p-2 rounded bg-white shadow-sm" value={formData.start_date} onChange={e => setFormData({...formData, start_date: e.target.value})} />
+                    {/* RESTORED STATS & DATES BLOCK */}
+                    <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 space-y-4">
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-blue-800 uppercase mb-1">Start Date</label>
+                                <input required type="date" className="w-full border border-slate-300 p-2 rounded bg-white shadow-sm outline-none focus:ring-2 focus:ring-blue-500" value={formData.start_date} onChange={e => setFormData({...formData, start_date: e.target.value})} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-blue-800 uppercase mb-1">Start Time</label>
+                                <input required type="time" className="w-full border border-slate-300 p-2 rounded bg-white shadow-sm outline-none focus:ring-2 focus:ring-blue-500" value={formData.start_time} onChange={e => setFormData({...formData, start_time: e.target.value})} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="block text-xs font-bold text-blue-800 uppercase mb-1">Completion (Est.)</label>
+                                <input readOnly type="date" className="w-full border border-slate-200 p-2 rounded bg-slate-50 text-slate-500 shadow-sm outline-none cursor-not-allowed" value={estimatedCompletion} />
+                            </div>
                         </div>
-                        <div className="flex-1">
-                            <label className="block text-xs font-bold text-blue-800 uppercase mb-1">Start Time</label>
-                            <input required type="time" className="w-full border border-slate-300 p-2 rounded bg-white shadow-sm" value={formData.start_time} onChange={e => setFormData({...formData, start_time: e.target.value})} />
+                        <div className="flex justify-between items-center text-xs font-bold text-blue-800 uppercase px-1">
+                            <div>Total Hours: {totalHours}</div>
+                            <div>Sessions Required: {sessionsRequired}</div>
                         </div>
                     </div>
                 </form>
@@ -256,52 +297,24 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                 </div>
 
                 {/* MANUAL DATE CONTROLS */}
-                <div className="p-4 bg-white border-t border-slate-200 space-y-4">
+                <div className="p-4 bg-white border-t border-slate-200">
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
+                    <div className="flex gap-2">
+                        <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
+                        <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
+                    </div>
                     
-                    {/* Add Make-up Session */}
-                    <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
-                        <div className="flex gap-2">
-                            <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
-                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
+                    {/* VISIBLE LIST OF ADDED DATES */}
+                    {formData.additional_dates.length > 0 && (
+                        <div className="mt-3 space-y-1.5 max-h-32 overflow-y-auto custom-scrollbar">
+                            {formData.additional_dates.map(d => (
+                                <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
+                                    <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                    <button type="button" onClick={() => removeDate(d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                                </div>
+                            ))}
                         </div>
-                        
-                        {/* THE MISSING LIST IS BACK */}
-                        {formData.additional_dates.length > 0 && (
-                            <div className="mt-3 space-y-1.5">
-                                {formData.additional_dates.map(d => (
-                                    <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
-                                        <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                        <button onClick={() => removeDate('add', d)} className="text-emerald-500 hover:text-red-500"><Trash2 size={16}/></button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="h-px bg-slate-100 w-full"></div>
-
-                    {/* Exclude / Skip Date */}
-                    <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Skip Specific Date</label>
-                        <div className="flex gap-2">
-                            <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm" value={newExcludeDate} onChange={e => setNewExcludeDate(e.target.value)} />
-                            <button type="button" onClick={handleAddExcludeDate} className="bg-red-500 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-red-600"><X size={16}/> Skip Date</button>
-                        </div>
-                        
-                        {/* EXCLUDED DATES LIST */}
-                        {formData.excluded_dates.length > 0 && (
-                            <div className="mt-3 space-y-1.5">
-                                {formData.excluded_dates.map(d => (
-                                    <div key={d} className="flex justify-between items-center p-2 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
-                                        <span className="font-bold line-through opacity-75">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                        <button onClick={() => removeDate('exclude', d)} className="text-red-400 hover:text-red-600"><Trash2 size={16}/></button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
+                    )}
                 </div>
             </div>
         </div>
