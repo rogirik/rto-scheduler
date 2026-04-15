@@ -18,40 +18,20 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// --- THE FIX: Universal Date Normalizer ---
-// Converts DD/MM/YYYY, YYYY/MM/DD, and Timestamps all into strict YYYY-MM-DD
-const normalizeToYYYYMMDD = (arr: any[]) => {
-    return arr.map(item => {
-        if (!item) return '';
-        let rawDate = typeof item === 'object' ? (item.date || item.start || item.override_date || String(item)) : String(item);
-        
-        // Strip timestamps
-        rawDate = rawDate.split('T')[0]; 
-
-        // Handle Australian Slashes (DD/MM/YYYY)
-        if (rawDate.includes('/')) {
-            const p = rawDate.split('/');
-            if (p.length === 3) {
-                const y = p[2].length === 4 ? p[2] : p[0];
-                const m = p[2].length === 4 ? p[1] : p[1];
-                const d = p[2].length === 4 ? p[0] : p[2];
-                return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-            }
-        }
-
-        // Handle Dashes (YYYY-MM-DD or DD-MM-YYYY)
-        if (rawDate.includes('-')) {
-            const p = rawDate.split('-');
-            if (p.length === 3) {
-                const y = p[0].length === 4 ? p[0] : p[2];
-                const m = p[1];
-                const d = p[0].length === 4 ? p[2] : p[0];
-                return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-            }
-        }
-
-        return rawDate;
-    }).filter(Boolean);
+// --- THE TANK: Extracts dates from literally any messy JSON/String format ---
+const extractDates = (data: any) => {
+    if (!data) return [];
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    const regex = /(\d{4}[-/]\d{1,2}[-/]\d{1,2})|(\d{1,2}[-/]\d{1,2}[-/]\d{4})/g;
+    const matches = str.match(regex) || [];
+    
+    return matches.map(d => {
+        const p = d.replace(/\//g, '-').split('-');
+        const y = p[0].length === 4 ? p[0] : p[2];
+        const m = p[1];
+        const day = p[0].length === 4 ? p[2] : p[0];
+        return `${y}-${m.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    });
 };
 
 const IGNORED_TERM_PREFIXES = ['NSW -', 'QLD -', 'WA -', 'SA -', 'TAS -', 'NT -', 'ACT -'];
@@ -78,7 +58,7 @@ const isWithinTerm = (date: Date, terms: any[] = []) => {
 const isNonWorkingDay = (date: Date, holidays: any[] = []) => { 
     const dayOfWeek = date.getDay(); 
     if (isHolidayByStr(getLocalIsoString(date), holidays)) return true; 
-    if (dayOfWeek === 0) return true; // Sunday default exclusion
+    if (dayOfWeek === 0) return true; 
     return false; 
 };
 
@@ -104,19 +84,16 @@ export const generateAllEventsForInstance = (
     const yearsMap: Record<string, AcademicYear> = {};
     if (Array.isArray(academicYears)) academicYears.forEach(y => yearsMap[String(y.id)] = y);
 
-    const safeParse = (data: any) => Array.isArray(data) ? data : (typeof data === 'string' ? JSON.parse(data || '[]') : []);
-    
-    // Compile and Normalize all manual additions
-    const manualAdds = normalizeToYYYYMMDD([
-        ...safeParse(instance.additional_dates),
-        ...scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date)
-    ]);
+    // Extract all overrides aggressively
+    const manualAdds = [
+        ...extractDates(instance.additional_dates),
+        ...extractDates(scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date))
+    ];
 
-    // Compile and Normalize all manual exclusions
-    const manualRemoves = normalizeToYYYYMMDD([
-        ...safeParse(instance.excluded_dates),
-        ...scheduleOverrides.filter(o => o.action_type === 'remove' && o.instance_id === instance.id).map(o => o.override_date)
-    ]);
+    const manualRemoves = [
+        ...extractDates(instance.excluded_dates),
+        ...extractDates(scheduleOverrides.filter(o => o.action_type === 'remove' && o.instance_id === instance.id).map(o => o.override_date))
+    ];
 
     for (const subjectItem of seqSubjects) {
         const subjectId = typeof subjectItem === 'string' ? subjectItem : subjectItem.subjectId || subjectItem.id;
@@ -134,11 +111,13 @@ export const generateAllEventsForInstance = (
                 const yearData = yearsMap[searchDate.getFullYear().toString()];
                 const dateStr = getLocalIsoString(searchDate);
 
+                // 1. Check strict removals
                 if (manualRemoves.includes(dateStr)) {
                     searchDate.setDate(searchDate.getDate() + 1);
                     continue; 
                 }
 
+                // 2. Check VIP Adds OR normal scheduling rules
                 if (
                     manualAdds.includes(dateStr) || 
                     (yearData && allowedDays.includes(dayOfWeek) && isWithinTerm(searchDate, yearData.terms || []) && !isNonWorkingDay(searchDate, yearData.holidays || []))
