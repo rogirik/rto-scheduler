@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle } from 'lucide-react';
+import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
 
 interface ScheduleCourseFormProps {
@@ -23,7 +23,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const [templates, setTemplates] = useState<Course[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
-  const [previewEvents, setPreviewEvents] = useState<any[]>([]);
+  const [generatedEvents, setGeneratedEvents] = useState<any[]>([]);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -33,7 +33,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     hours_per_day: 6,
     delivery_mode: 'Blended',
     allowed_days: [1, 2, 3, 4, 5],
-    additional_dates: [] as string[]
+    additional_dates: [] as string[],
+    excluded_dates: [] as string[]
   });
 
   const [newAddDate, setNewAddDate] = useState('');
@@ -58,17 +59,18 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           hours_per_day: initialData.hours_per_day || 6,
           delivery_mode: initialData.delivery_mode || 'Blended',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
-          additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : []
+          additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : [],
+          excluded_dates: Array.isArray(initialData.excluded_dates) ? initialData.excluded_dates : []
         });
       }
     };
     fetchDependencies();
   }, [initialData]);
 
-  // --- LIVE PREVIEW GENERATOR ---
+  // --- LIVE SCHEDULE GENERATOR ---
   useEffect(() => {
       if (!formData.template_id || !formData.start_date) {
-          setPreviewEvents([]);
+          setGeneratedEvents([]);
           return;
       }
       setCalculating(true);
@@ -76,8 +78,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       const timer = setTimeout(() => {
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
+          // The engine will read mockInstance.excluded_dates and automatically skip them
           const events = generateAllEventsForInstance(mockInstance, academicYears, selectedTemplate, subjects, [], []);
-          setPreviewEvents(events);
+          setGeneratedEvents(events);
           setCalculating(false);
       }, 300);
 
@@ -101,10 +104,26 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       setNewAddDate('');
   };
 
-  const removeDate = (dateToRemove: string) => {
+  // NEW: Trash Can logic for the generated list
+  const handleSkipDateFromList = (dateObj: Date) => {
+      const y = dateObj.getFullYear();
+      const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const d = String(dateObj.getDate()).padStart(2, '0');
+      const dateStr = `${y}-${m}-${d}`;
+
+      if (!formData.excluded_dates.includes(dateStr)) {
+          setFormData(prev => ({ 
+              ...prev, 
+              excluded_dates: [...prev.excluded_dates, dateStr].sort() 
+          }));
+      }
+  };
+
+  const removeOverrideDate = (type: 'add' | 'exclude', dateToRemove: string) => {
       setFormData(prev => ({
           ...prev,
-          additional_dates: prev.additional_dates.filter(d => d !== dateToRemove)
+          additional_dates: type === 'add' ? prev.additional_dates.filter(d => d !== dateToRemove) : prev.additional_dates,
+          excluded_dates: type === 'exclude' ? prev.excluded_dates.filter(d => d !== dateToRemove) : prev.excluded_dates
       }));
   };
 
@@ -122,6 +141,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             delivery_mode: formData.delivery_mode,
             allowed_days: formData.allowed_days,
             additional_dates: formData.additional_dates,
+            excluded_dates: formData.excluded_dates,
             status: 'active'
         };
 
@@ -142,14 +162,18 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         }
 
         if (instanceId) {
-            // Delete old added dates for this cohort
-            await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId).eq('action_type', 'add');
+            // Wipe slate clean for this cohort's overrides
+            await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId);
 
-            const overridesToInsert = formData.additional_dates.map(date => ({
-                instance_id: instanceId,
-                override_date: date,
-                action_type: 'add'
-            }));
+            const overridesToInsert: any[] = [];
+            
+            formData.additional_dates.forEach(date => {
+                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'add' });
+            });
+
+            formData.excluded_dates.forEach(date => {
+                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'remove' });
+            });
 
             if (overridesToInsert.length > 0) {
                 await supabase.from('schedule_overrides').insert(overridesToInsert);
@@ -165,7 +189,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     }
   };
 
-  // --- CALCULATE STATS ---
   const selectedTemplate = templates.find(t => t.id === formData.template_id);
   const seqSubjects = (selectedTemplate as any)?.sequenced_subjects || (selectedTemplate as any)?.sequencedSubjects || [];
   let totalHours = 0;
@@ -179,16 +202,15 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const sessionsRequired = Math.ceil(totalHours / (formData.hours_per_day || 6));
   
   let estimatedCompletion = '';
-  if (previewEvents.length > 0) {
-      const lastEvent = previewEvents[previewEvents.length - 1];
-      estimatedCompletion = lastEvent.start.toLocaleDateString('en-CA'); // Formats as YYYY-MM-DD for the input
+  if (generatedEvents.length > 0) {
+      const lastEvent = generatedEvents[generatedEvents.length - 1];
+      estimatedCompletion = lastEvent.start.toLocaleDateString('en-CA'); 
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]">
         
-        {/* HEADER */}
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
@@ -197,10 +219,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
         </div>
 
-        {/* CONTENT GRID */}
         <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
             
-            {/* LEFT SIDE: Form Inputs */}
             <div className="flex-1 overflow-y-auto p-6 border-r border-slate-100 space-y-6 custom-scrollbar">
                 <form id="schedule-form" onSubmit={handleSubmit} className="space-y-6">
                     
@@ -251,7 +271,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                         </div>
                     </div>
 
-                    {/* RESTORED STATS & DATES BLOCK */}
                     <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 space-y-4">
                         <div className="flex gap-4">
                             <div className="flex-1">
@@ -275,45 +294,77 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                 </form>
             </div>
 
-            {/* RIGHT SIDE: Live Preview & Overrides */}
+            {/* RIGHT SIDE: Live Schedule & Overrides */}
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px]">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Dates Preview</h3>
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
                     {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar bg-slate-100">
-                    {previewEvents.length === 0 ? (
+                    {generatedEvents.length === 0 ? (
                         <div className="text-center py-10 text-slate-400 italic text-sm">Select a Template and Start Date to generate the schedule.</div>
                     ) : (
-                        previewEvents.map((ev, idx) => (
-                            <div key={idx} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex items-center gap-4">
-                                <div className="text-xs font-bold text-slate-300 w-6">{idx + 1}</div>
-                                <div className="font-bold text-slate-700 text-sm">{ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}</div>
+                        generatedEvents.map((ev, idx) => (
+                            <div key={idx} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex items-center justify-between gap-4 group hover:border-red-200 transition-colors">
+                                <div className="flex items-center gap-4">
+                                    <div className="text-xs font-bold text-slate-300 w-6">{idx + 1}</div>
+                                    <div className="font-bold text-slate-700 text-sm">{ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}</div>
+                                </div>
+                                <button 
+                                    type="button" 
+                                    onClick={() => handleSkipDateFromList(ev.start)}
+                                    className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                                    title="Skip this date"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
                             </div>
                         ))
                     )}
                 </div>
 
                 {/* MANUAL DATE CONTROLS */}
-                <div className="p-4 bg-white border-t border-slate-200">
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
-                    <div className="flex gap-2">
-                        <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
-                        <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
-                    </div>
+                <div className="p-4 bg-white border-t border-slate-200 space-y-4">
                     
-                    {/* VISIBLE LIST OF ADDED DATES */}
-                    {formData.additional_dates.length > 0 && (
-                        <div className="mt-3 space-y-1.5 max-h-32 overflow-y-auto custom-scrollbar">
-                            {formData.additional_dates.map(d => (
-                                <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
-                                    <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                    <button type="button" onClick={() => removeDate(d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
-                                </div>
-                            ))}
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
+                        <div className="flex gap-2">
+                            <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
+                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
                         </div>
+                        
+                        {formData.additional_dates.length > 0 && (
+                            <div className="mt-3 space-y-1.5 max-h-24 overflow-y-auto custom-scrollbar">
+                                {formData.additional_dates.map(d => (
+                                    <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
+                                        <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                        <button type="button" onClick={() => removeOverrideDate('add', d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* RESTORED SKIPPED DATES LIST FOR UNDOING MISTAKES */}
+                    {formData.excluded_dates.length > 0 && (
+                        <>
+                            <div className="h-px bg-slate-100 w-full"></div>
+                            <div>
+                                <label className="block text-xs font-bold text-red-500 uppercase mb-2">Manually Skipped Dates</label>
+                                <div className="space-y-1.5 max-h-24 overflow-y-auto custom-scrollbar">
+                                    {formData.excluded_dates.map(d => (
+                                        <div key={d} className="flex justify-between items-center p-2 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
+                                            <span className="font-bold line-through opacity-75">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                            <button type="button" onClick={() => removeOverrideDate('exclude', d)} className="text-red-400 hover:text-red-600 transition-colors flex items-center gap-1" title="Restore this date">
+                                                <RotateCcw size={14} /> Restore
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </>
                     )}
                 </div>
             </div>
