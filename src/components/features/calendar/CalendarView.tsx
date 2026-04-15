@@ -18,7 +18,7 @@ const getLocalIsoString = (date: Date) => {
 export const CalendarView = () => {
   const [loading, setLoading] = useState(true);
   
-  // FIX: Using strictly local time for the current view state
+  // Using strictly local time for the current view state
   const [currentDate, setCurrentDate] = useState(() => { 
       const now = new Date(); 
       return new Date(now.getFullYear(), now.getMonth(), 1); 
@@ -41,20 +41,20 @@ export const CalendarView = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       
-      const [iRes, tRes, subRes, yearRes, aRes, teachRes] = await Promise.all([
+      const [iRes, tRes, subRes, yearRes, aRes, teachRes, overridesRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll('course_templates'),
         ApiService.getSubjects(),
         ApiService.getAll('academic_years'),
         ApiService.getAllocationsGlobal(),
-        supabase.from('teachers').select('*') 
+        supabase.from('teachers').select('*'),
+        supabase.from('schedule_overrides').select('*') // NEW: Fetch the database overrides
       ]);
 
       let filteredInstances = iRes || [];
       let filteredTemplates = tRes || [];
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
-      // Do not strict filter reference data to protect calculation engine
       let filteredSubjects = subRes || [];
       let filteredYears = yearRes || [];
 
@@ -87,8 +87,6 @@ export const CalendarView = () => {
 
           filteredInstances = filteredInstances.filter(isMine);
           filteredTeachers = filteredTeachers.filter(isMine);
-          
-          // FIX: Allow global templates so the engine can see them
           filteredTemplates = filteredTemplates.filter(isMineOrGlobal);
           
           const validInstanceIds = new Set(filteredInstances.map(i => i.id));
@@ -106,13 +104,14 @@ export const CalendarView = () => {
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
-            // FIX: Pass ALL subjects and years so clusters don't skip
+            // NEW: Pass ALL subjects, years, and overrides!
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
                 filteredYears as any[], 
                 template as any, 
                 filteredSubjects as any[], 
-                filteredTeachers
+                filteredTeachers,
+                overridesRes.data || [] // Passed directly to the engine
             );
 
             const hydratedEvents = instanceEvents.map(ev => {
@@ -121,7 +120,7 @@ export const CalendarView = () => {
                 );
                 const teacher = filteredTeachers.find((t: any) => t.id === allocation?.teacher_id);
                 
-                // --- FIX: LOCAL TIME MAPPING ONLY ---
+                // --- LOCAL TIME MAPPING ---
                 const originalDate = new Date(ev.start);
                 const year = originalDate.getFullYear();
                 const month = originalDate.getMonth();
@@ -133,7 +132,7 @@ export const CalendarView = () => {
                 const duration = instance.hours_per_day || 7;
                 const fixedEnd = new Date(fixedStart);
                 fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration));
-                fixedEnd.setMinutes(fixedStart.getMinutes() + (duration % 1 * 60));
+                fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
 
                 return {
                     ...ev,
