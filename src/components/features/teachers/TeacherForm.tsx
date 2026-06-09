@@ -41,7 +41,7 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
     schedule: defaultSchedule,
     leave_date: '',
     blackout_dates: [] as DateRange[],
-    competencies: [] as string[] // Stores allowed Subject IDs
+    competencies: [] as string[]
   });
 
   // Load Global Data (Settings & Subjects)
@@ -109,7 +109,7 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
         schedule: mergedSchedule,
         leave_date: (initialData as any).leave_date || '',
         blackout_dates: parsedBlackouts,
-        competencies: (initialData as any).competencies || [] // Hydrate competencies
+        competencies: (initialData as any).competencies || []
       });
     }
   }, [initialData, globalAwardHours]);
@@ -154,43 +154,8 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // --- PAYWALL CHECK: TRAINER LIMIT ---
-    // Only check limits if we are creating a NEW teacher (not editing)
-    if (!initialData) {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          const { data: profile } = await supabase
-            .from('user_profiles')
-            .select('organization_id')
-            .eq('id', user.id)
-            .single();
-
-          if (profile?.organization_id) {
-            const { data: org } = await supabase
-              .from('organizations')
-              .select('max_trainers')
-              .eq('id', profile.organization_id)
-              .single();
-
-            const { count } = await supabase
-              .from('teachers')
-              .select('*', { count: 'exact', head: true })
-              .eq('organization_id', profile.organization_id);
-
-            if (count !== null && org?.max_trainers && count >= org.max_trainers) {
-              alert(`⚠️ Limit Reached: Your current plan only allows ${org.max_trainers} trainers. Please upgrade your RTO account to add more staff.`);
-              return; 
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Limit check failed", err);
-      }
-    }
-
     setLoading(true);
+
     try {
       const { data: authData, error: authError } = await supabase.auth.getUser();
       if (authError) throw authError;
@@ -215,7 +180,7 @@ export const TeacherForm = ({ initialData, onClose, onSuccess }: TeacherFormProp
           availability: { schedule: formData.schedule },
           leave_date: formData.leave_date || null,
           blackout_dates: cleanedBlackouts,
-          competencies: formData.competencies, // Save competencies
+          competencies: formData.competencies,
           user_id: (initialData as any)?.user_id || userId 
       };
 
