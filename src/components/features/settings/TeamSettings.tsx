@@ -37,7 +37,7 @@ export const TeamSettings = () => {
             .from('organizations')
             .select('join_code')
             .eq('id', me.organization_id)
-            .single();
+            .maybeSingle(); // Prevents 406 errors
           setJoinCode(org?.join_code || 'No Code');
         }
       }
@@ -51,7 +51,6 @@ export const TeamSettings = () => {
   const handleRemoveMember = async (userId: string) => {
     if (!confirm('Are you sure you want to remove this user from the organization?')) return;
     
-    // Set their organization_id to null instead of deleting the profile outright
     const { error } = await supabase
       .from('user_profiles')
       .update({ organization_id: null, role: 'teacher' })
@@ -64,19 +63,21 @@ export const TeamSettings = () => {
     }
   };
 
-  // --- THE NEW ROLE UPDATER ---
+  // --- THE BULLETPROOF ROLE UPDATER ---
   const handleRoleChange = async (userId: string, newRole: string) => {
     setUpdatingRole(userId);
     try {
-      const { error } = await supabase
-        .from('user_profiles')
-        .update({ role: newRole })
-        .eq('id', userId);
+      // Call the powerful RPC function we just created in SQL
+      const { error } = await supabase.rpc('update_team_role', {
+          target_user_id: userId,
+          new_role: newRole
+      });
 
       if (error) throw error;
       
-      // Update local state instantly so the UI feels snappy
-      setTeam(prev => prev.map(m => m.id === userId ? { ...m, role: newRole } : m));
+      // Force a fresh fetch from the database to prove it stuck
+      await fetchTeamData();
+
     } catch (error: any) {
         alert('Error updating role: ' + error.message);
     } finally {
@@ -160,12 +161,10 @@ export const TeamSettings = () => {
                   </div>
                 </td>
                 
-                {/* ROLE DROPDOWN */}
                 <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
                         {getRoleIcon(member.role || 'teacher')}
                         
-                        {/* Only Admins can change roles, and they can't demote themselves */}
                         {myRole === 'admin' && member.id !== team.find(m => m.role === myRole)?.id ? (
                              <select 
                                 value={member.role || 'teacher'}
