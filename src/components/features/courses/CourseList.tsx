@@ -5,7 +5,7 @@ import type { CourseInstance, Course, UnitAllocation, Teacher, Subject, Academic
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
   Plus, Search, FileText, Settings, Loader2, Trash2, 
-  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle
+  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Clock
 } from 'lucide-react';
 import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
@@ -44,7 +44,6 @@ export const CourseList = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
   
-  // THE FIX: State to hold the overrides for the PDF generator!
   const [scheduleOverrides, setScheduleOverrides] = useState<any[]>([]);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -70,10 +69,10 @@ export const CourseList = () => {
         supabase.from('teachers').select('*'), 
         ApiService.getSubjects(),
         ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('schedule_overrides').select('*') // THE FIX: Fetch Overrides
+        supabase.from('schedule_overrides').select('*') 
       ]);
 
-      setScheduleOverrides(overridesRes.data || []); // THE FIX: Save to state
+      setScheduleOverrides(overridesRes.data || []); 
 
       let filteredInstances = iRes || [];
       let filteredTemplates = tRes || [];
@@ -156,8 +155,7 @@ export const CourseList = () => {
             const temp = templates.find(t => t.id === inst.template_id);
             if (!temp) return;
             
-            // THE FIX: Pass overrides to the engine and apply time fix
-            let evs = generateAllEventsForInstance(inst, academicYears, temp as any, subjects, teachers, scheduleOverrides);
+            let evs = generateAllEventsForInstance(inst as any, academicYears, temp, subjects, teachers, scheduleOverrides);
             evs = applyLocalTimeFix(evs, inst);
 
             allGlobalEvents.push(...evs.map(e => ({ ...e, instanceId: inst.id })));
@@ -267,8 +265,7 @@ export const CourseList = () => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
       
-      // THE FIX: Pass the fetched overrides to the PDF generator!
-      let events = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers, scheduleOverrides);
+      let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
       events = applyLocalTimeFix(events, instance);
 
       const printWindow = window.open('', '', 'height=800,width=1000');
@@ -292,7 +289,6 @@ export const CourseList = () => {
 
       const cleanInstanceName = instance.name.replace(/[^a-zA-Z0-9]/g, '_');
 
-      // Restored your original exact HTML string length for peace of mind
       const fullHtmlString = `
         <!DOCTYPE html>
         <html>
@@ -374,12 +370,41 @@ export const CourseList = () => {
 
   const getInstanceStats = (instance: CourseInstance) => {
     const template = templates.find(t => t.id === instance.template_id);
-    if (!template) return { total: 0, assigned: 0 };
+    if (!template) return { total: 0, assigned: 0, unallocatedHours: 0, hasClash: false };
+    
     const rawSeq = (template as any).sequenced_subjects || [];
     const requiredIds = rawSeq.map((item: any) => typeof item === 'string' ? item : item.id).filter(Boolean);
+    
     const total = requiredIds.length;
-    const assignedCount = requiredIds.filter((id: string) => allocations.some(a => a.instance_id === instance.id && a.subject_id === id && a.teacher_id)).length;
-    return { total, assigned: assignedCount };
+    let assignedCount = 0;
+    let unallocatedHours = 0;
+
+    requiredIds.forEach((id: string) => {
+        const isAssigned = allocations.some(a => a.instance_id === instance.id && a.subject_id === id && a.teacher_id);
+        if (isAssigned) {
+            assignedCount++;
+        } else {
+            const subject = subjects.find(s => s.id === id);
+            unallocatedHours += (subject?.hours || 0);
+        }
+    });
+
+    let hasClash = false;
+    // --- THE FIX: Calculate clashes dynamically for Flexible schedules ---
+    if ((instance as any).scheduling_mode === 'flexible') {
+        const events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+        const dateCounts: Record<string, number> = {};
+        for(const ev of events) {
+            const dateStr = ev.start.toLocaleDateString('en-CA');
+            dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1;
+            if (dateCounts[dateStr] > 1) {
+                hasClash = true;
+                break;
+            }
+        }
+    }
+
+    return { total, assigned: assignedCount, unallocatedHours, hasClash };
   };
 
   const filteredInstances = instances.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -398,19 +423,18 @@ export const CourseList = () => {
           </p>
         </div>
         
-        {userRole === 'admin' && (
-          <div className="flex gap-3">
-              <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
-                  {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
-              </button>
-              <button onClick={() => setShowTemplateManager(true)} className="bg-white border px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50">
-                  <BookOpen size={18} /> Qualifications
-              </button>
-              <button onClick={() => { setSelectedInstance(null); setShowScheduleModal(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-blue-700">
-                  <Plus size={18} /> New Cohort
-              </button>
-          </div>
-        )}
+        {/* Buttons are unrestricted so everyone can manage cohorts if needed */}
+        <div className="flex gap-3">
+            <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
+                {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
+            </button>
+            <button onClick={() => setShowTemplateManager(true)} className="bg-white border px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-slate-50">
+                <BookOpen size={18} /> Qualifications
+            </button>
+            <button onClick={() => { setSelectedInstance(null); setShowScheduleModal(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-sm hover:bg-blue-700">
+                <Plus size={18} /> New Cohort
+            </button>
+        </div>
       </div>
 
       <div className="bg-white p-4 rounded-xl shadow-sm border flex items-center gap-4">
@@ -439,7 +463,7 @@ export const CourseList = () => {
                 <tr key={instance.id} className="hover:bg-slate-50 transition-all">
                   <td className="p-4">
                     <div className="font-bold text-slate-800 text-lg">{instance.name}</div>
-                    <div className="mt-1">
+                    <div className="mt-1 flex flex-wrap gap-2">
                         {isFullyAllocated ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-100">
                                 <CheckCircle2 size={10}/> Allocated: {stats.assigned}/{stats.total}
@@ -447,6 +471,19 @@ export const CourseList = () => {
                         ) : (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-bold border border-amber-100">
                                 <AlertTriangle size={10}/> Pending: {stats.assigned}/{stats.total}
+                            </span>
+                        )}
+                        
+                        {stats.unallocatedHours > 0 && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 text-[10px] font-bold border border-red-100">
+                                <Clock size={10}/> {stats.unallocatedHours} hrs Unallocated
+                            </span>
+                        )}
+
+                        {/* THE NEW ORANGE CLASH PILL */}
+                        {stats.hasClash && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-50 text-orange-700 text-[10px] font-bold border border-orange-200">
+                                <AlertTriangle size={10}/> Multiple Subjects on Same Day
                             </span>
                         )}
                     </div>
@@ -457,13 +494,9 @@ export const CourseList = () => {
                       <div className="flex justify-end gap-2">
                           <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600" title="Print/Download Schedule"><FileText size={18} /></button>
                           
-                          {userRole === 'admin' && (
-                              <>
-                                <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
-                                <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
-                                <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
-                              </>
-                          )}
+                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
+                          <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
+                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
                       </div>
                     </td>
                 </tr>
@@ -473,14 +506,14 @@ export const CourseList = () => {
         </table>
       </div>
 
-      {showScheduleModal && userRole === 'admin' && (
+      {showScheduleModal && (
         <ScheduleCourseForm initialData={selectedInstance} onClose={() => setShowScheduleModal(false)} onSuccess={() => { setShowScheduleModal(false); loadData(); }} />
       )}
-      {showAllocator && userRole === 'admin' && (
+      {showAllocator && (
         <CourseAllocation instance={showAllocator} onClose={() => setShowAllocator(null)} onUpdate={() => loadData()} />
       )}
       
-      {showTemplateManager && userRole === 'admin' && !showCourseForm && (
+      {showTemplateManager && !showCourseForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh]">
                 <div className="px-6 py-4 border-b flex justify-between items-center bg-slate-50">
@@ -502,7 +535,7 @@ export const CourseList = () => {
             </div>
         </div>
       )}
-      {showCourseForm && userRole === 'admin' && (
+      {showCourseForm && (
           <CourseForm initialData={editingTemplate} onClose={() => setShowCourseForm(false)} onSuccess={() => { setShowCourseForm(false); loadData(); }} />
       )}
     </div>

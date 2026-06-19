@@ -65,13 +65,14 @@ export const Dashboard = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) setUserEmail(user.email || '');
 
-      const [iRes, tRes, aRes, tempRes, subRes, yRes] = await Promise.all([
+      const [iRes, tRes, aRes, tempRes, subRes, yRes, overridesRes] = await Promise.all([
         ApiService.getCourseInstances(),
         supabase.from('teachers').select('*'), 
         ApiService.getAllocationsGlobal(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getSubjects(),
-        ApiService.getAll<AcademicYear>('academic_years')
+        ApiService.getAll<AcademicYear>('academic_years'),
+        supabase.from('schedule_overrides').select('*') // NEW: Ensure accurate dashboard dates
       ]);
 
       let instances = iRes || [];
@@ -80,6 +81,7 @@ export const Dashboard = () => {
       let templates = tempRes || [];
       let subjects = subRes || [];
       let academicYears = yRes || [];
+      let scheduleOverrides = overridesRes.data || [];
       let myOrgId = null;
       let role: 'admin' | 'teacher' = 'teacher';
 
@@ -135,6 +137,7 @@ export const Dashboard = () => {
             const requiredSubjects = (template as any).sequenced_subjects?.length || 0;
             const assignedSubjects = allocations.filter((a: any) => a.instance_id === instance.id).length;
             
+            // ALERT: Missing Unit Allocations
             if (assignedSubjects < requiredSubjects && instance.start_date) {
                 const today = new Date();
                 const startDate = new Date(instance.start_date);
@@ -144,7 +147,28 @@ export const Dashboard = () => {
                 }
             }
 
-            const events = generateAllEventsForInstance(instance, academicYears, template as any, subjects, teachers);
+            const events = generateAllEventsForInstance(instance as any, academicYears, template as any, subjects, teachers, scheduleOverrides);
+
+            // --- THE FIX: Flexible Overlap Detection for Dashboard ---
+            if ((instance as any).scheduling_mode === 'flexible') {
+                const dateCounts: Record<string, number> = {};
+                let overlapFound = false;
+                for (const ev of events) {
+                    const dateStr = ev.start.toLocaleDateString('en-CA');
+                    dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1;
+                    if (dateCounts[dateStr] > 1) {
+                        overlapFound = true;
+                        break;
+                    }
+                }
+                if (overlapFound) {
+                    newAlerts.push({
+                        id: `overlap-${instance.id}`,
+                        type: 'warning',
+                        message: `Flexible Cohort ${instance.name} has multiple subjects mapped to the same calendar day.`
+                    });
+                }
+            }
 
             events.forEach(event => {
                 const allocation = allocations.find((a: any) => a.instance_id === instance.id && a.subject_id === event.subjectId);
@@ -188,6 +212,7 @@ export const Dashboard = () => {
       if (role === 'teacher' && user) workload = workload.filter(w => w.user_id === user.id);
       setTrainerWorkload(workload);
 
+      // ALERT: Trainer Double Bookings
       Object.keys(tSchedules).forEach(tId => {
           const events = tSchedules[tId].sort((a, b) => a.start.getTime() - b.start.getTime());
           const teacherName = teachers.find(t => t.id === tId)?.name || 'Unknown Teacher';
@@ -235,7 +260,6 @@ export const Dashboard = () => {
 
     const updatedDates = [...blackoutDates, newLeaveObj];
     
-    // Save to Supabase
     const { error } = await supabase
         .from('teachers')
         .update({ blackout_dates: updatedDates })
@@ -410,7 +434,7 @@ export const Dashboard = () => {
   }
 
   // ============================================================================
-  // DESKTOP VIEW: ADMIN OVERVIEW (Remains Unchanged)
+  // DESKTOP VIEW: ADMIN OVERVIEW
   // ============================================================================
   return (
     <div className="p-8 space-y-8 h-full overflow-y-auto">

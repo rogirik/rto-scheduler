@@ -18,7 +18,6 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// --- THE TANK: Extracts dates from literally any messy JSON/String format ---
 const extractDates = (data: any) => {
     if (!data) return [];
     const str = typeof data === 'string' ? data : JSON.stringify(data);
@@ -63,7 +62,7 @@ const isNonWorkingDay = (date: Date, holidays: any[] = []) => {
 };
 
 export const generateAllEventsForInstance = (
-    instance: CourseInstance, 
+    instance: CourseInstance & { scheduling_mode?: string, subject_rules?: Record<string, any> }, 
     academicYears: AcademicYear[], 
     template: Course | undefined, 
     subjects: Subject[],
@@ -76,15 +75,22 @@ export const generateAllEventsForInstance = (
     if (!instance.start_date || !seqSubjects || seqSubjects.length === 0) return [];
     
     const events: any[] = [];
-    const allowedDays = instance.allowed_days || [1, 2, 3, 4, 5];
+    
+    // Global Fallbacks
+    const globalAllowedDays = instance.allowed_days || [1, 2, 3, 4, 5];
+    const globalStartDate = instance.start_date;
+    const isFlexible = instance.scheduling_mode === 'flexible';
+    const subjectRules = instance.subject_rules || {};
+
     const hoursPerDay = instance.hours_per_day || 6;
     const [startHour, startMinute] = (instance.start_time || '09:00').split(':').map(Number);
-    let currentDate = parseAsLocal(instance.start_date, instance.start_time || '09:00');
+    
+    // We only use this global tracker if we are in Consecutive mode
+    let consecutiveCurrentDate = parseAsLocal(globalStartDate, instance.start_time || '09:00');
     
     const yearsMap: Record<string, AcademicYear> = {};
     if (Array.isArray(academicYears)) academicYears.forEach(y => yearsMap[String(y.id)] = y);
 
-    // Extract all overrides aggressively
     const manualAdds = [
         ...extractDates(instance.additional_dates),
         ...extractDates(scheduleOverrides.filter(o => o.action_type === 'add' && o.instance_id === instance.id).map(o => o.override_date))
@@ -102,25 +108,33 @@ export const generateAllEventsForInstance = (
         
         let hoursToSchedule = (subject.hours && subject.hours > 0) ? subject.hours : 40;
 
+        // --- THE FLEXIBLE SWITCH ---
+        // Determine the start date and allowed days for this SPECIFIC subject
+        const rule = subjectRules[subject.id];
+        const subjectAllowedDays = (isFlexible && rule?.allowed_days?.length > 0) ? rule.allowed_days : globalAllowedDays;
+        
+        // If Flexible, start counting from the subject's specific start date. If Consecutive, pick up where the last subject left off.
+        let subjectSearchDate = isFlexible 
+            ? parseAsLocal(rule?.start_date || globalStartDate, instance.start_time || '09:00')
+            : new Date(consecutiveCurrentDate);
+
         while (hoursToSchedule > 0) {
             let sessionDate: Date | null = null;
-            let searchDate = new Date(currentDate);
+            let searchDate = new Date(subjectSearchDate);
 
             for (let i = 0; i < MAX_DATE_SEARCH_ITERATIONS; i++) {
                 const dayOfWeek = searchDate.getDay(); 
                 const yearData = yearsMap[searchDate.getFullYear().toString()];
                 const dateStr = getLocalIsoString(searchDate);
 
-                // 1. Check strict removals
                 if (manualRemoves.includes(dateStr)) {
                     searchDate.setDate(searchDate.getDate() + 1);
                     continue; 
                 }
 
-                // 2. Check VIP Adds OR normal scheduling rules
                 if (
                     manualAdds.includes(dateStr) || 
-                    (yearData && allowedDays.includes(dayOfWeek) && isWithinTerm(searchDate, yearData.terms || []) && !isNonWorkingDay(searchDate, yearData.holidays || []))
+                    (yearData && subjectAllowedDays.includes(dayOfWeek) && isWithinTerm(searchDate, yearData.terms || []) && !isNonWorkingDay(searchDate, yearData.holidays || []))
                 ) {
                     sessionDate = new Date(searchDate);
                     break;
@@ -130,8 +144,14 @@ export const generateAllEventsForInstance = (
 
             if (!sessionDate) break;
 
-            currentDate = new Date(sessionDate);
-            currentDate.setDate(currentDate.getDate() + 1);
+            // Move the subject tracker forward by 1 day
+            subjectSearchDate = new Date(sessionDate);
+            subjectSearchDate.setDate(subjectSearchDate.getDate() + 1);
+
+            // If we are in consecutive mode, update the global tracker so the next subject starts after this one finishes
+            if (!isFlexible) {
+                consecutiveCurrentDate = new Date(subjectSearchDate);
+            }
 
             const hoursThisSession = Math.min(hoursToSchedule, hoursPerDay);
             const start = new Date(sessionDate); start.setHours(startHour, startMinute, 0, 0);
