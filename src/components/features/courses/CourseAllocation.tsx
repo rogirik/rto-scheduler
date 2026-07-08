@@ -4,7 +4,7 @@ import { supabase } from '../../../services/supabase';
 import type { CourseInstance, UnitAllocation, Teacher, Subject, Course, AcademicYear } from '../../../services/api';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
-  X, CheckCircle2, Loader2, Search, ArrowRight, BookOpen, RotateCcw, Wand2
+  X, CheckCircle2, Loader2, Search, ArrowRight, BookOpen, RotateCcw, Wand2, Calendar as CalIcon, Globe, MapPin
 } from 'lucide-react';
 
 interface Props {
@@ -147,13 +147,11 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       return false;
   };
 
-  // 1. THE BRAIN: Strict Rule Engine
   const getTeacherStatus = (teacherId: string, subjectId: string) => {
       const teacher = teachers.find(t => t.id === teacherId);
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
-      // 1. BULLETPROOF COMPETENCY CHECK
       let comps = (teacher as any).competencies;
       if (typeof comps === 'string') {
           try { comps = JSON.parse(comps); } catch(e) { comps = []; }
@@ -171,10 +169,8 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           return { available: false, reason: "Not Qualified" };
       }
 
-      // 2. ONLINE CHECK
       if (teacher.trains_online && instance.delivery_mode !== 'Online') return { available: false, reason: "Online Only" };
 
-      // 3. LOAD CHECK
       const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacherId);
       let currentAnnualLoad = 0;
       teacherAllocations.forEach(alloc => {
@@ -186,7 +182,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
       if (currentAnnualLoad > (teacher.max_hours || 800)) return { available: false, reason: "Over Max Hours" };
 
-      // 4. ACTUAL DAY AVAILABILITY CHECK
       const requiredDays = subjectRequiredDays[subjectId] && subjectRequiredDays[subjectId].length > 0 
           ? subjectRequiredDays[subjectId] 
           : (instance.allowed_days || [1, 2, 3, 4, 5]);
@@ -199,7 +194,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           }
       }
 
-      // 5. CLASH DETECTION (Already Teaching)
       const proposedEvents = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       const existingEvents = teacherSchedules[teacherId] || [];
 
@@ -228,7 +222,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
     
     const status = getTeacherStatus(teacherId, selectedSubjectId);
     if (status && !status.available) {
-        // STRICT LOCK: We completely removed the `confirm()` dialog here.
         alert(`STRICT COMPLIANCE LOCK: Cannot assign. ${status.reason}`);
         return;
     }
@@ -382,6 +375,20 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
 
   const getAssignedTeacherId = (subjectId: string) => currentAllocations.find(a => a.subject_id === subjectId)?.teacher_id || "";
 
+  // HELPER: Get dynamic start and end dates for a specific unit
+  const getUnitDateRange = (subjectId: string) => {
+      const events = currentInstanceEvents.filter(e => e.subjectId === subjectId);
+      if (events.length === 0) return 'Pending Dates';
+      
+      const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
+      const firstDate = sortedEvents[0].start;
+      const lastDate = sortedEvents[sortedEvents.length - 1].start;
+      
+      const formatStr = (d: Date) => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+      if (firstDate.getTime() === lastDate.getTime()) return formatStr(firstDate);
+      return `${formatStr(firstDate)} - ${formatStr(lastDate)}`;
+  };
+
   if (loading) return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"><Loader2 className="animate-spin text-white" size={40} /></div>;
 
   const matchedTemplate = allTemplates.find(t => t.id === instance.template_id);
@@ -400,7 +407,16 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><BookOpen className="text-blue-600" size={24}/> Assign Trainers</h2>
-            <div className="flex items-center gap-3 mt-1 text-sm text-slate-500"><span className="font-bold text-blue-600">{instance.name}</span><span>•</span><span>{instance.delivery_mode}</span><span>•</span><span>{resolvedSubjects.length} Units</span></div>
+            <div className="flex items-center gap-3 mt-1 text-sm text-slate-500">
+                <span className="font-bold text-blue-600">{instance.name}</span>
+                <span>•</span>
+                <span className="flex items-center gap-1">
+                    {instance.delivery_mode === 'Online' ? <Globe size={14} /> : <MapPin size={14} />} 
+                    {instance.delivery_mode}
+                </span>
+                <span>•</span>
+                <span>{resolvedSubjects.length} Units</span>
+            </div>
           </div>
           <div className="flex gap-3">
               <button onClick={handleAutoAssign} className="px-3 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-bold text-xs transition-colors border border-blue-200 flex items-center gap-1">
@@ -431,9 +447,23 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                                 <div className="flex justify-between items-start mb-3">
                                     <div className="flex items-center gap-3">
                                         <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{index + 1}</div>
-                                        <div className="flex flex-col"><span className="font-bold text-slate-700 text-sm">{subject.code}</span><span className="text-xs text-slate-500 mt-0.5">{subject.name}</span></div>
+                                        <div className="flex flex-col">
+                                            <span className="font-bold text-slate-700 text-sm">{subject.code}</span>
+                                            <span className="text-xs text-slate-500 mt-0.5 line-clamp-1">{subject.name}</span>
+                                            
+                                            {/* NEW: Delivery Mode & Unit Dates */}
+                                            <div className="flex flex-wrap items-center gap-2 mt-2">
+                                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border flex items-center gap-1 ${instance.delivery_mode === 'Online' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-purple-50 text-purple-600 border-purple-200'}`}>
+                                                    {instance.delivery_mode === 'Online' ? <Globe size={10} /> : <MapPin size={10} />}
+                                                    {instance.delivery_mode}
+                                                </span>
+                                                <span className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                                                    <CalIcon size={10} /> {getUnitDateRange(subject.id)}
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <span className="text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">{subject.hours}h</span>
+                                    <span className="text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100 shrink-0">{subject.hours}h</span>
                                 </div>
                                 <div className="pl-9">
                                     {isProcessing ? (
@@ -472,7 +502,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                         return (
                             <button 
                                 key={teacher.id} 
-                                // THE FIX: If they aren't available, the button is physically disabled.
                                 disabled={!selectedSubjectId || isAssignedToSelected || processingSubjectId !== null || !isAvailable} 
                                 onClick={() => selectedSubjectId && handleAssign(teacher.id)} 
                                 className={`w-full text-left p-3 rounded-xl border flex items-center gap-3 transition-all group ${
