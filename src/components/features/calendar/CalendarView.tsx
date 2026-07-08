@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin } from 'lucide-react';
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -18,7 +18,6 @@ const getLocalIsoString = (date: Date) => {
 export const CalendarView = () => {
   const [loading, setLoading] = useState(true);
   
-  // Using strictly local time for the current view state
   const [currentDate, setCurrentDate] = useState(() => { 
       const now = new Date(); 
       return new Date(now.getFullYear(), now.getMonth(), 1); 
@@ -48,7 +47,7 @@ export const CalendarView = () => {
         ApiService.getAll('academic_years'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'),
-        supabase.from('schedule_overrides').select('*') // NEW: Fetch the database overrides
+        supabase.from('schedule_overrides').select('*') 
       ]);
 
       let filteredInstances = iRes || [];
@@ -104,14 +103,13 @@ export const CalendarView = () => {
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
-            // NEW: Pass ALL subjects, years, and overrides!
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
                 filteredYears as any[], 
                 template as any, 
                 filteredSubjects as any[], 
                 filteredTeachers,
-                overridesRes.data || [] // Passed directly to the engine
+                overridesRes.data || [] 
             );
 
             const hydratedEvents = instanceEvents.map(ev => {
@@ -120,7 +118,6 @@ export const CalendarView = () => {
                 );
                 const teacher = filteredTeachers.find((t: any) => t.id === allocation?.teacher_id);
                 
-                // --- LOCAL TIME MAPPING ---
                 const originalDate = new Date(ev.start);
                 const year = originalDate.getFullYear();
                 const month = originalDate.getMonth();
@@ -351,6 +348,20 @@ export const CalendarView = () => {
       setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
   };
 
+  // HELPER: Calculates the full date range for a specific unit in the popup
+  const getUnitRangeForEvent = (event: any) => {
+      const unitEvents = events.filter(e => e.instanceId === event.instanceId && e.summary === event.summary);
+      if (unitEvents.length === 0) return '';
+      
+      const sortedEvents = [...unitEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
+      const firstDate = sortedEvents[0].start;
+      const lastDate = sortedEvents[sortedEvents.length - 1].start;
+      
+      const formatStr = (d: Date) => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+      if (firstDate.getTime() === lastDate.getTime()) return formatStr(firstDate);
+      return `${formatStr(firstDate)} - ${formatStr(lastDate)}`;
+  };
+
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-slate-400" /></div>;
 
   return (
@@ -482,9 +493,30 @@ export const CalendarView = () => {
                             {selectedEvent.teacherEmail && <div className="text-sm text-slate-500">{selectedEvent.teacherEmail}</div>}
                         </div>
                     </div>
-                    <div className="pt-4 border-t border-slate-100">
-                        <div className="text-xs font-bold text-slate-400 uppercase mb-1">Cohort</div>
-                        <div className="font-medium text-slate-700 bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">{selectedEvent.courseName}</div>
+                    
+                    {/* NEW: Cohort Details & Delivery Mode */}
+                    <div className="pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+                        <div>
+                            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Cohort</div>
+                            <div className="font-medium text-slate-700 bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 truncate" title={selectedEvent.courseName}>
+                                {selectedEvent.courseName}
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Delivery</div>
+                            <div className={`font-medium px-3 py-2 rounded-lg border flex items-center gap-1.5 ${selectedEvent.location === 'Online' ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-purple-50 text-purple-700 border-purple-100'}`}>
+                                {selectedEvent.location === 'Online' ? <Globe size={14} /> : <MapPin size={14} />} 
+                                {selectedEvent.location}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* NEW: Full Unit Date Range */}
+                    <div className="pt-1 border-t border-slate-100">
+                        <div className="text-xs font-bold text-slate-400 uppercase mb-1 mt-3">Full Unit Schedule</div>
+                        <div className="font-medium text-slate-700 bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 flex items-center gap-2">
+                            <CalIcon size={16} className="text-slate-400" /> {getUnitRangeForEvent(selectedEvent)}
+                        </div>
                     </div>
                 </div>
             </div>
