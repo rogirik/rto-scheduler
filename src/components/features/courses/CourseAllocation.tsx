@@ -152,6 +152,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       const subject = subjects.find(s => s.id === subjectId);
       if (!teacher || !subject) return null;
 
+      // 1. Competency Check
       let comps = (teacher as any).competencies;
       if (typeof comps === 'string') {
           try { comps = JSON.parse(comps); } catch(e) { comps = []; }
@@ -169,8 +170,10 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           return { available: false, reason: "Not Qualified" };
       }
 
+      // 2. Online Mode Check
       if (teacher.trains_online && instance.delivery_mode !== 'Online') return { available: false, reason: "Online Only" };
 
+      // 3. Max Load Check
       const teacherAllocations = globalAllocations.filter(a => a.teacher_id === teacherId);
       let currentAnnualLoad = 0;
       teacherAllocations.forEach(alloc => {
@@ -182,6 +185,7 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
       }
       if (currentAnnualLoad > (teacher.max_hours || 800)) return { available: false, reason: "Over Max Hours" };
 
+      // 4. Weekly Day Check
       const requiredDays = subjectRequiredDays[subjectId] && subjectRequiredDays[subjectId].length > 0 
           ? subjectRequiredDays[subjectId] 
           : (instance.allowed_days || [1, 2, 3, 4, 5]);
@@ -194,19 +198,50 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
           }
       }
 
+      // 5. Advanced Event Checking (Leave & Clashes)
       const proposedEvents = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       const existingEvents = teacherSchedules[teacherId] || [];
 
+      // Extract Blackout/Leave Data
+      let blackouts: any[] = [];
+      if (Array.isArray((teacher as any).blackout_dates)) {
+          blackouts = (teacher as any).blackout_dates;
+      } else if (typeof (teacher as any).blackout_dates === 'string') {
+          try { blackouts = JSON.parse((teacher as any).blackout_dates); } catch(e) {}
+      }
+      
+      const leaveDateStr = (teacher as any).leave_date;
+      const leaveTime = leaveDateStr ? new Date(leaveDateStr).setHours(0,0,0,0) : null;
+
       for (const newEv of proposedEvents) {
+          const newStartTime = new Date(newEv.start).getTime();
+          const newEndTime = new Date(newEv.end).getTime();
+
+          // A: Check Permanent Resignation/Leave Date
+          if (leaveTime && newStartTime >= leaveTime) {
+              return { available: false, reason: "Past resignation/leave date" };
+          }
+
+          // B: Check Specific Holiday/Blackout Ranges
+          for (const bo of blackouts) {
+              if (!bo.start) continue;
+              const boStart = new Date(bo.start).setHours(0,0,0,0);
+              const boEnd = new Date(bo.end || bo.start).setHours(23,59,59,999);
+              
+              if (newStartTime >= boStart && newStartTime <= boEnd) {
+                  const dt = new Date(newStartTime).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+                  return { available: false, reason: `On leave (${dt})` };
+              }
+          }
+
+          // C: Check Schedule Clashes
           for (const existEv of existingEvents) {
               if (existEv.instanceId === instance.id && existEv.subjectId === subjectId) continue;
 
-              const newStart = new Date(newEv.start).getTime();
-              const newEnd = new Date(newEv.end).getTime();
               const existStart = new Date(existEv.start).getTime();
               const existEnd = new Date(existEv.end).getTime();
 
-              if (newStart < existEnd && newEnd > existStart) {
+              if (newStartTime < existEnd && newEndTime > existStart) {
                   const dt = new Date(existStart);
                   const dateStr = dt.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
                   return { available: false, reason: `Clash: ${existEv.instanceName} on ${dateStr}` };
@@ -375,7 +410,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
 
   const getAssignedTeacherId = (subjectId: string) => currentAllocations.find(a => a.subject_id === subjectId)?.teacher_id || "";
 
-  // HELPER: Get dynamic start and end dates for a specific unit
   const getUnitDateRange = (subjectId: string) => {
       const events = currentInstanceEvents.filter(e => e.subjectId === subjectId);
       if (events.length === 0) return 'Pending Dates';
@@ -451,7 +485,6 @@ export const CourseAllocation = ({ instance, onClose, onUpdate }: Props) => {
                                             <span className="font-bold text-slate-700 text-sm">{subject.code}</span>
                                             <span className="text-xs text-slate-500 mt-0.5 line-clamp-1">{subject.name}</span>
                                             
-                                            {/* NEW: Delivery Mode & Unit Dates */}
                                             <div className="flex flex-wrap items-center gap-2 mt-2">
                                                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border flex items-center gap-1 ${instance.delivery_mode === 'Online' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-purple-50 text-purple-600 border-purple-200'}`}>
                                                     {instance.delivery_mode === 'Online' ? <Globe size={10} /> : <MapPin size={10} />}
