@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
-import { supabase } from '../../../services/supabase'; // <-- INJECTED SUPABASE FOR AUTH CHECK
+import { supabase } from '../../../services/supabase'; 
 import type { Course, Subject } from '../../../services/api';
 import { Search, Plus, X, Clock, GripVertical, Save, Loader2, Globe } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd';
@@ -27,18 +27,14 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
   useEffect(() => {
     const loadData = async () => {
       try {
-        // 1. Get the current user
         const { data: { user } } = await supabase.auth.getUser();
         
-        // 2. Fetch all raw subjects
         const subjects = await ApiService.getAll<Subject>('subjects');
         let validSubjects = subjects || [];
 
-        // 3. THE MARK YATES TACKLE: Strict Organization Filtering
         if (user) {
             let myOrgId = null;
             
-            // Check user_profiles for org ID
             try {
                 const { data: profile } = await supabase
                     .from('user_profiles')
@@ -48,7 +44,6 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
                 if (profile) myOrgId = profile.organization_id;
             } catch(e) {}
 
-            // Fallback to teachers table
             if (!myOrgId) {
                 const { data: teachers } = await supabase
                     .from('teachers')
@@ -58,9 +53,10 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
                 if (teachers && teachers.length > 0) myOrgId = teachers[0].organization_id;
             }
 
-            // Execute the block: Only allow exact matches
+            // THE FIX: Allow global subjects (no org ID) to pass the filter
             validSubjects = validSubjects.filter((s: any) => {
-                if (myOrgId && s.organization_id) return s.organization_id === myOrgId;
+                if (!s.organization_id) return true; 
+                if (myOrgId) return s.organization_id === myOrgId;
                 return s.user_id === user.id;
             });
         }
@@ -78,10 +74,9 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
              const linked = initialData.sequenced_subjects
                .map((savedItem: any) => {
                    const id = typeof savedItem === 'string' ? savedItem : savedItem.id;
-                   const baseSub = validSubjects.find(s => s.id === id); // Use filtered list
+                   const baseSub = validSubjects.find(s => s.id === id);
                    if (!baseSub) return null;
                    
-                   // HYDRATION: Merge global subject info with the LOCAL online flag
                    return {
                        ...baseSub,
                        is_online: typeof savedItem === 'object' ? !!savedItem.is_online : false
@@ -108,7 +103,6 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
     setSelectedSubjects(selectedSubjects.filter(s => s.id !== subjectId));
   };
 
-  // Toggle online status ONLY for this specific qualification
   const toggleOnline = (subjectId: string, isOnline: boolean) => {
     setSelectedSubjects(prev => prev.map(s => 
       s.id === subjectId ? { ...s, is_online: isOnline } as Subject : s
@@ -130,7 +124,6 @@ export const CourseForm = ({ onClose, onSuccess, initialData }: CourseFormProps)
     setLoading(true);
     
     try {
-      // SAVE LOGIC: Save the local configuration (including is_online) to the template
       const payload = {
         ...formData,
         sequenced_subjects: selectedSubjects.map(sub => ({
