@@ -11,7 +11,6 @@ import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
 import { CourseForm } from './CourseForm';
 
-// Helper to strictly format dates to Local YYYY-MM-DD to avoid timezone shifts
 const getLocalIsoString = (date: Date) => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -52,7 +51,6 @@ export const CourseList = () => {
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
   
   const [scheduleOverrides, setScheduleOverrides] = useState<any[]>([]);
-
   const [searchTerm, setSearchTerm] = useState('');
 
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -88,16 +86,36 @@ export const CourseList = () => {
       let filteredTeachers = teachRes.data || [];
       let rawYears = yearRes || [];
 
-      // STRICT STATE FILTERING FOR ACADEMIC YEARS
+      // --- THE FIX: DEEP STATE FILTERING ---
+      const isStateMatch = (itemState: any, selectedState: string) => {
+          if (!itemState) return true; // Global/National
+          const s = itemState.toString().trim().toUpperCase();
+          if (s === 'NATIONAL' || s === 'ALL') return true;
+          return s.includes(selectedState);
+      };
+
       const rawState = settingsRes?.state || settingsRes?.default_state;
       let filteredYears = rawYears;
+      
       if (rawState) {
-          const cleanSelectedState = rawState.toString().trim().toUpperCase();
-          const stateMatched = rawYears.filter((y: any) => {
-              if (!y.state) return true;
-              return y.state.toString().trim().toUpperCase() === cleanSelectedState;
-          });
-          if (stateMatched.length > 0) filteredYears = stateMatched;
+          const cleanState = rawState.toString().trim().toUpperCase();
+          filteredYears = rawYears
+              .filter((y: any) => isStateMatch(y.state, cleanState))
+              .map((y: any) => {
+                  const yCopy = { ...y };
+                  // Filter individual terms
+                  if (Array.isArray(yCopy.terms)) {
+                      yCopy.terms = yCopy.terms.filter((t: any) => isStateMatch(t.state, cleanState));
+                  }
+                  // Filter individual holidays
+                  if (Array.isArray(yCopy.holidays)) {
+                      yCopy.holidays = yCopy.holidays.filter((h: any) => {
+                          const hState = typeof h === 'object' ? h.state : null;
+                          return isStateMatch(hState, cleanState);
+                      });
+                  }
+                  return yCopy;
+              });
       }
       setAcademicYears(filteredYears);
 
@@ -297,7 +315,6 @@ export const CourseList = () => {
 
       events.sort((a,b) => a.start.getTime() - b.start.getTime());
 
-      // Merge standard events with holidays and term markers
       const merged = events.map(e => ({ ...e, type: 'class' }));
       const firstDate = new Date(events[0].start);
       firstDate.setHours(0,0,0,0);
@@ -306,6 +323,7 @@ export const CourseList = () => {
 
       const timelineInjections: any[] = [];
       
+      // The academicYears array is already deeply filtered by state!
       academicYears.forEach((y: any) => {
           if (Array.isArray(y.terms)) {
               y.terms.forEach((t: any) => {
@@ -498,7 +516,6 @@ export const CourseList = () => {
     let hasClash = false;
     let endDateStr = '';
     
-    // Generate events temporarily to find the exact end date and check for clashes
     let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
     
     if (events.length > 0) {
