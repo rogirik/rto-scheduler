@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff, Flag } from 'lucide-react';
+import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff, Flag, Download } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
 
 interface ScheduleCourseFormProps {
@@ -50,14 +50,23 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
   useEffect(() => {
     const fetchDependencies = async () => {
-      const [tRes, sRes, yRes] = await Promise.all([
+      const [tRes, sRes, yRes, settingsRes] = await Promise.all([
         ApiService.getAll<Course>('course_templates'),
         ApiService.getSubjects(),
-        ApiService.getAll<AcademicYear>('academic_years')
+        ApiService.getAll<AcademicYear>('academic_years'),
+        ApiService.getSettings().catch(() => null)
       ]);
       setTemplates(tRes || []);
       setSubjects(sRes || []);
-      setAcademicYears(yRes || []);
+
+      const rawYears = yRes || [];
+      const selectedState = settingsRes?.state || settingsRes?.default_state;
+      let filteredYears = rawYears;
+      if (selectedState) {
+          const stateMatched = rawYears.filter((y: any) => !y.state || y.state.toUpperCase() === selectedState.toUpperCase());
+          if (stateMatched.length > 0) filteredYears = stateMatched;
+      }
+      setAcademicYears(filteredYears);
 
       if (initialData) {
         setFormData({
@@ -112,7 +121,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       const timelineInjections: any[] = [];
       
       academicYears.forEach((y: any) => {
-          // Add Term Start Markers
           if (Array.isArray(y.terms)) {
               y.terms.forEach((t: any) => {
                   const tStart = new Date(t.start_date || t.start);
@@ -129,7 +137,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
               });
           }
 
-          // Add Holidays
           if (Array.isArray(y.holidays)) {
               y.holidays.forEach((h: any) => {
                   const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
@@ -147,7 +154,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           }
       });
 
-      // Add Manually Skipped Dates
       formData.excluded_dates.forEach(dStr => {
           const dDate = new Date(dStr);
           dDate.setHours(12,0,0,0);
@@ -165,7 +171,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       });
 
       return [...merged, ...timelineInjections].sort((a, b) => {
-          // Ensure Term Markers sort *before* classes on the exact same day
           if (a.start.getTime() === b.start.getTime()) {
               if (a.type === 'term_marker') return -1;
               if (b.type === 'term_marker') return 1;
@@ -306,6 +311,88 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const overlappingDates = Object.keys(dateCounts).filter(d => dateCounts[d] > 1);
   const hasOverlaps = formData.scheduling_mode === 'flexible' && overlappingDates.length > 0;
 
+  // PRINT / DOWNLOAD PDF HANDLER
+  const handleDownloadSchedulePDF = () => {
+    if (timeline.length === 0) return alert("Please generate a schedule first.");
+
+    const printWin = window.open('', '', 'height=700,width=900');
+    if (!printWin) return;
+
+    let classCounterPrint = 1;
+    const templateName = selectedTemplate?.name || 'Course Schedule';
+
+    const rowsHtml = timeline.map((item) => {
+        if (item.type === 'term_marker') {
+            return `
+                <tr class="term-row">
+                    <td colspan="4">🚩 ${item.summary} Begins</td>
+                </tr>
+            `;
+        }
+        if (item.type === 'holiday' || item.type === 'manual_skip') {
+            return `
+                <tr class="holiday-row">
+                    <td>-</td>
+                    <td>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                    <td colspan="2">🌴 ${item.summary} (No Class)</td>
+                </tr>
+            `;
+        }
+
+        const cNum = classCounterPrint++;
+        return `
+            <tr>
+                <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
+                <td>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                <td>${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</td>
+                <td><strong>${item.summary}</strong></td>
+            </tr>
+        `;
+    }).join('');
+
+    printWin.document.write(`
+      <html>
+        <head>
+          <title>${formData.name || 'Cohort'} - Schedule</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 24px; color: #1e293b; }
+            h1 { font-size: 22px; margin-bottom: 4px; }
+            .meta { font-size: 12px; color: #64748b; margin-bottom: 20px; line-height: 1.6; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th { background: #f1f5f9; padding: 8px 12px; text-align: left; border-bottom: 2px solid #cbd5e1; text-transform: uppercase; font-size: 11px; color: #475569; }
+            td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+            tr.term-row td { background: #1e293b; color: white; font-weight: bold; text-transform: uppercase; font-size: 11px; padding: 6px 12px; }
+            tr.holiday-row td { background: #fef3c7; color: #92400e; font-weight: 600; }
+          </style>
+        </head>
+        <body>
+          <h1>${formData.name || 'Cohort Schedule'}</h1>
+          <div class="meta">
+            <strong>Template:</strong> ${templateName} &bull; 
+            <strong>Mode:</strong> ${formData.delivery_mode} &bull; 
+            <strong>Start Date:</strong> ${formData.start_date} &bull; 
+            <strong>Est. Completion:</strong> ${estimatedCompletion || 'N/A'}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 50px; text-align: center;">#</th>
+                <th style="width: 160px;">Date</th>
+                <th style="width: 140px;">Time / Duration</th>
+                <th>Subject / Cluster</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          <script>window.onload = function() { window.print(); }</script>
+        </body>
+      </html>
+    `);
+    printWin.document.close();
+  };
+
   let classCounter = 1;
 
   return (
@@ -315,7 +402,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Automatically schedules around recorded term breaks and holidays.</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Automatically schedules around state term breaks and holidays.</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
         </div>
@@ -461,7 +548,17 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
-                    {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
+                    <div className="flex items-center gap-2">
+                        {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
+                        <button
+                            type="button"
+                            onClick={handleDownloadSchedulePDF}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 border border-slate-200"
+                            title="Download Schedule as PDF"
+                        >
+                            <Download size={14} /> PDF
+                        </button>
+                    </div>
                 </div>
 
                 {hasOverlaps && (
