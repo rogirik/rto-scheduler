@@ -7,7 +7,6 @@ import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-// HELPER: Safely generate a YYYY-MM-DD string in LOCAL time to prevent 11-hour UTC shifts
 const getLocalIsoString = (date: Date) => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -26,6 +25,7 @@ export const CalendarView = () => {
   const [events, setEvents] = useState<any[]>([]);
   const [instances, setInstances] = useState<any[]>([]); 
   const [teachers, setTeachers] = useState<any[]>([]);
+  const [academicYears, setAcademicYears] = useState<any[]>([]); // Stored for CSV Export
   
   const [selectedFilter, setSelectedFilter] = useState('all'); 
   const [filterType, setFilterType] = useState<'all' | 'cohort' | 'teacher'>('all');
@@ -94,6 +94,7 @@ export const CalendarView = () => {
 
       setInstances(filteredInstances);
       setTeachers(filteredTeachers);
+      setAcademicYears(filteredYears); // Store this for the CSV export logic
 
       let allGeneratedEvents: any[] = [];
 
@@ -212,11 +213,26 @@ export const CalendarView = () => {
     return merged;
   };
 
+  // NEW: Calculates which Term a specific date falls into based on database settings
+  const getTermForDate = (date: Date) => {
+      const time = date.getTime();
+      for (const y of academicYears) {
+          if (Array.isArray(y.terms)) {
+              for (const t of y.terms) {
+                  const tStart = new Date(t.start_date || t.start).setHours(0,0,0,0);
+                  const tEnd = new Date(t.end_date || t.end).setHours(23,59,59,999);
+                  if (time >= tStart && time <= tEnd) return t.name;
+              }
+          }
+      }
+      return "Out of Term / Break";
+  };
+
   const handleExportCSV = () => {
     if (filteredEvents.length === 0) return alert("No events to export.");
 
     const mergedList = getMergedEvents(filteredEvents);
-    const headers = ["Date Range", "Start Time", "End Time", "Subject", "Teacher", "Cohort"];
+    const headers = ["Date Range", "Start Time", "End Time", "Subject", "Teacher", "Cohort", "Term"];
     
     const rows = mergedList.map(ev => {
         const dateStr = getLocalIsoString(ev.start) === getLocalIsoString(ev.endDate)
@@ -229,7 +245,8 @@ export const CalendarView = () => {
             ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }),
             `"${ev.summary}"`,
             `"${ev.teacherName}"`,
-            `"${ev.courseName}"`
+            `"${ev.courseName}"`,
+            `"${getTermForDate(ev.start)}"`
         ].join(",");
     });
 
@@ -348,7 +365,6 @@ export const CalendarView = () => {
       setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
   };
 
-  // HELPER: Calculates the full date range for a specific unit in the popup
   const getUnitRangeForEvent = (event: any) => {
       const unitEvents = events.filter(e => e.instanceId === event.instanceId && e.summary === event.summary);
       if (unitEvents.length === 0) return '';
@@ -494,7 +510,6 @@ export const CalendarView = () => {
                         </div>
                     </div>
                     
-                    {/* NEW: Cohort Details & Delivery Mode */}
                     <div className="pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
                         <div>
                             <div className="text-xs font-bold text-slate-400 uppercase mb-1">Cohort</div>
@@ -511,7 +526,6 @@ export const CalendarView = () => {
                         </div>
                     </div>
 
-                    {/* NEW: Full Unit Date Range */}
                     <div className="pt-1 border-t border-slate-100">
                         <div className="text-xs font-bold text-slate-400 uppercase mb-1 mt-3">Full Unit Schedule</div>
                         <div className="font-medium text-slate-700 bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 flex items-center gap-2">
