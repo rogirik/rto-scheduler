@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin, CalendarOff } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin } from 'lucide-react';
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -59,11 +59,16 @@ export const CalendarView = () => {
       let filteredSubjects = subRes || [];
       let rawYears: any[] = yearRes || [];
 
-      // Filter academic years strictly by the state selected in Settings (if configured)
-      const selectedState = settingsRes?.state || settingsRes?.default_state;
+      // STRICT STATE FILTERING
+      const rawState = settingsRes?.state || settingsRes?.default_state;
       let filteredYears = rawYears;
-      if (selectedState) {
-          const stateMatched = rawYears.filter((y: any) => !y.state || y.state.toUpperCase() === selectedState.toUpperCase());
+      
+      if (rawState) {
+          const cleanSelectedState = rawState.toString().trim().toUpperCase();
+          const stateMatched = rawYears.filter((y: any) => {
+              if (!y.state) return true; // Keep years with no state assigned (global)
+              return y.state.toString().trim().toUpperCase() === cleanSelectedState;
+          });
           if (stateMatched.length > 0) filteredYears = stateMatched;
       }
 
@@ -85,11 +90,7 @@ export const CalendarView = () => {
       if (user) {
           let myOrgId = null;
           try {
-              const { data: profile } = await supabase
-                  .from('user_profiles')
-                  .select('organization_id')
-                  .eq('id', user.id)
-                  .single();
+              const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', user.id).single();
               if (profile) myOrgId = profile.organization_id;
           } catch(e) {}
 
@@ -99,7 +100,7 @@ export const CalendarView = () => {
           }
 
           const isMine = (item: any) => {
-              if (myOrgId && item.organization_id) return true;
+              if (myOrgId && item.organization_id) return item.organization_id === myOrgId;
               return item.user_id === user.id;
           };
 
@@ -125,7 +126,6 @@ export const CalendarView = () => {
 
       filteredInstances.forEach((instance: any) => {
         if (instance.status === 'completed') return; 
-
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
@@ -138,10 +138,8 @@ export const CalendarView = () => {
                 overridesRes.data || [] 
             );
 
-            const hydratedEvents = instanceEvents.map(ev => {
-                const allocation = filteredAllocations.find((a: any) => 
-                    a.instance_id === ev.instanceId && a.subject_id === ev.subjectId
-                );
+            const hydratedEvents = instanceEvents.map((ev: any) => {
+                const allocation = filteredAllocations.find((a: any) => a.instance_id === ev.instanceId && a.subject_id === ev.subjectId);
                 const teacher = filteredTeachers.find((t: any) => t.id === allocation?.teacher_id);
                 
                 const originalDate = new Date(ev.start);
@@ -170,16 +168,13 @@ export const CalendarView = () => {
                     uniqueKey: `${instance.id}|${getLocalIsoString(fixedStart)}|${teacher?.id || 'unassigned'}|${ev.summary}` 
                 };
             });
-
             allGeneratedEvents = [...allGeneratedEvents, ...hydratedEvents];
         }
       });
 
       const uniqueEventsMap = new Map();
       allGeneratedEvents.forEach(ev => {
-          if (!uniqueEventsMap.has(ev.uniqueKey)) {
-              uniqueEventsMap.set(ev.uniqueKey, ev);
-          }
+          if (!uniqueEventsMap.has(ev.uniqueKey)) uniqueEventsMap.set(ev.uniqueKey, ev);
       });
       
       setEvents(Array.from(uniqueEventsMap.values()));
@@ -369,6 +364,25 @@ export const CalendarView = () => {
     printWindow.document.close();
   };
 
+  const isSchoolHoliday = (dateObj: Date) => {
+      const time = dateObj.getTime();
+      let hasTermsDefined = false;
+
+      for (const y of academicYears) {
+          if (Array.isArray(y.terms) && y.terms.length > 0) {
+              hasTermsDefined = true;
+              for (const t of y.terms) {
+                  const tStart = new Date(t.start_date || t.start).setHours(0,0,0,0);
+                  const tEnd = new Date(t.end_date || t.end).setHours(23,59,59,999);
+                  if (time >= tStart && time <= tEnd) {
+                      return false; 
+                  }
+              }
+          }
+      }
+      return hasTermsDefined;
+  };
+
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   
@@ -396,11 +410,9 @@ export const CalendarView = () => {
   const getUnitRangeForEvent = (event: any) => {
       const unitEvents = events.filter(e => e.instanceId === event.instanceId && e.summary === event.summary);
       if (unitEvents.length === 0) return '';
-      
       const sortedEvents = [...unitEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
       const firstDate = sortedEvents[0].start;
       const lastDate = sortedEvents[sortedEvents.length - 1].start;
-      
       const formatStr = (d: Date) => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
       if (firstDate.getTime() === lastDate.getTime()) return formatStr(firstDate);
       return `${formatStr(firstDate)} - ${formatStr(lastDate)}`;
@@ -472,31 +484,26 @@ export const CalendarView = () => {
       <div className="grid grid-cols-7 flex-1 gap-px bg-slate-200 border border-slate-200 rounded-xl overflow-hidden shadow-sm">
         {days.map((day, idx) => {
             if (!day) return <div key={idx} className="bg-slate-50/50" />;
-            const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             
-            const dayEvents = filteredEvents.filter(e => {
-                return getLocalIsoString(e.start) === dateKey;
-            });
-
-            const holidayTitle = holidayMap[dateKey];
+            const cellDate = new Date(year, month, day);
+            const dateKey = getLocalIsoString(cellDate);
+            
+            const dayEvents = filteredEvents.filter(e => getLocalIsoString(e.start) === dateKey);
             const isToday = getLocalIsoString(new Date()) === dateKey;
+            
+            const isHoliday = isSchoolHoliday(cellDate);
 
             return (
                 <div 
                     key={idx} 
                     className={`p-2 min-h-[120px] overflow-hidden transition-colors group ${
-                        holidayTitle ? 'bg-amber-50/70 hover:bg-amber-50' : 'bg-white hover:bg-slate-50'
+                        isHoliday ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'
                     }`}
                 >
                     <div className="text-sm font-bold text-slate-400 mb-1 flex justify-between items-center">
                         <span className={isToday ? "bg-blue-600 text-white w-6 h-6 flex items-center justify-center rounded-full shadow-sm" : ""}>{day}</span>
                         <div className="flex items-center gap-1">
-                            {holidayTitle && (
-                                <span className="text-[10px] bg-amber-200/80 text-amber-900 px-1.5 py-0.5 rounded font-bold truncate max-w-[80px]" title={holidayTitle}>
-                                    🌴 {holidayTitle}
-                                </span>
-                            )}
-                            {dayEvents.length > 0 && <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 font-bold">{dayEvents.length}</span>}
+                            {dayEvents.length > 0 && <span className="text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-500 font-bold shadow-sm">{dayEvents.length}</span>}
                         </div>
                     </div>
                     
