@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
-import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin } from 'lucide-react';
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -26,7 +25,7 @@ export const CalendarView = () => {
   const [instances, setInstances] = useState<any[]>([]); 
   const [teachers, setTeachers] = useState<any[]>([]);
   const [academicYears, setAcademicYears] = useState<any[]>([]);
-  const [holidayMap, setHolidayMap] = useState<Record<string, string>>({});
+  const [holidayMap, setHolidayMap] = useState<Record<string, boolean>>({});
   
   const [selectedFilter, setSelectedFilter] = useState('all'); 
   const [filterType, setFilterType] = useState<'all' | 'cohort' | 'teacher'>('all');
@@ -59,28 +58,44 @@ export const CalendarView = () => {
       let filteredSubjects = subRes || [];
       let rawYears: any[] = yearRes || [];
 
-      // STRICT STATE FILTERING
+      // --- THE FIX: DEEP STATE FILTERING ---
+      const isStateMatch = (itemState: any, selectedState: string) => {
+          if (!itemState) return true; // Global/National
+          const s = itemState.toString().trim().toUpperCase();
+          if (s === 'NATIONAL' || s === 'ALL') return true;
+          return s.includes(selectedState);
+      };
+
       const rawState = settingsRes?.state || settingsRes?.default_state;
       let filteredYears = rawYears;
       
       if (rawState) {
-          const cleanSelectedState = rawState.toString().trim().toUpperCase();
-          const stateMatched = rawYears.filter((y: any) => {
-              if (!y.state) return true; // Keep years with no state assigned (global)
-              return y.state.toString().trim().toUpperCase() === cleanSelectedState;
-          });
-          if (stateMatched.length > 0) filteredYears = stateMatched;
+          const cleanState = rawState.toString().trim().toUpperCase();
+          filteredYears = rawYears
+              .filter((y: any) => isStateMatch(y.state, cleanState))
+              .map((y: any) => {
+                  const yCopy = { ...y };
+                  if (Array.isArray(yCopy.terms)) {
+                      yCopy.terms = yCopy.terms.filter((t: any) => isStateMatch(t.state, cleanState));
+                  }
+                  if (Array.isArray(yCopy.holidays)) {
+                      yCopy.holidays = yCopy.holidays.filter((h: any) => {
+                          const hState = typeof h === 'object' ? h.state : null;
+                          return isStateMatch(hState, cleanState);
+                      });
+                  }
+                  return yCopy;
+              });
       }
 
-      // Build holiday lookup map (dateKey -> holiday name)
-      const hMap: Record<string, string> = {};
+      // Build holiday lookup map
+      const hMap: Record<string, boolean> = {};
       filteredYears.forEach((y: any) => {
           if (Array.isArray(y.holidays)) {
               y.holidays.forEach((h: any) => {
                   const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
                   if (!isNaN(hDate.getTime())) {
-                      const key = getLocalIsoString(hDate);
-                      hMap[key] = typeof h === 'string' ? 'Public Holiday' : (h.name || 'Public Holiday');
+                      hMap[getLocalIsoString(hDate)] = true;
                   }
               });
           }
@@ -122,6 +137,7 @@ export const CalendarView = () => {
       setTeachers(filteredTeachers);
       setAcademicYears(filteredYears);
 
+      const { generateAllEventsForInstance } = await import('../../../utils/scheduler');
       let allGeneratedEvents: any[] = [];
 
       filteredInstances.forEach((instance: any) => {
@@ -301,28 +317,19 @@ export const CalendarView = () => {
         const dayNum = i - adjustedFirstDay + 1;
         
         if (dayNum > 0 && dayNum <= pDaysInMonth) {
-             const dateKey = `${pYear}-${String(pMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+             const cellDate = new Date(pYear, pMonth, dayNum);
+             const dateKey = getLocalIsoString(cellDate);
              
-             const dayEvents = filteredEvents.filter(e => {
-                 return getLocalIsoString(e.start) === dateKey;
-             });
+             const dayEvents = filteredEvents.filter(e => getLocalIsoString(e.start) === dateKey);
+             const isNonWorkingDay = isSchoolHoliday(cellDate) || !!holidayMap[dateKey];
              
-             const holidayTitle = holidayMap[dateKey];
              const uniqueSummaries = Array.from(new Set(dayEvents.map(e => e.summary)));
-             
              const eventsHtml = uniqueSummaries.map(summary => {
                  const ev = dayEvents.find(e => e.summary === summary);
-                 return `
-                    <div class="event">
-                        <div class="subject">• ${summary}</div>
-                        <div class="cohort">${ev?.courseName}</div>
-                    </div>
-                 `;
+                 return `<div class="event"><div class="subject">• ${summary}</div><div class="cohort">${ev?.courseName}</div></div>`;
              }).join('');
 
-             const holidayHtml = holidayTitle ? `<div style="color: #d97706; font-size: 10px; font-weight: bold; margin-bottom: 4px;">🌴 ${holidayTitle}</div>` : '';
-
-             cellsHtml += `<div class="cell ${holidayTitle ? 'bg-amber' : ''}"><div class="day-num">${dayNum}</div>${holidayHtml}${eventsHtml}</div>`;
+             cellsHtml += `<div class="cell ${isNonWorkingDay ? 'bg-gray' : ''}"><div class="day-num">${dayNum}</div>${eventsHtml}</div>`;
         } else {
              cellsHtml += `<div class="cell bg-gray"></div>`;
         }
@@ -341,8 +348,7 @@ export const CalendarView = () => {
             .grid-container { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid #ddd; border-left: 1px solid #ddd; }
             .header-cell { background: #f1f5f9; padding: 10px; text-align: center; font-weight: bold; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; text-transform: uppercase; font-size: 12px; color: #475569; }
             .cell { border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; min-height: 120px; padding: 8px; }
-            .bg-gray { background: #f8fafc; }
-            .bg-amber { background: #fffbeb; }
+            .bg-gray { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .day-num { font-weight: bold; color: #333; margin-bottom: 8px; font-size: 14px; }
             .event { margin-bottom: 8px; font-size: 11px; line-height: 1.4; }
             .subject { font-weight: bold; color: #0f172a; }
@@ -491,13 +497,13 @@ export const CalendarView = () => {
             const dayEvents = filteredEvents.filter(e => getLocalIsoString(e.start) === dateKey);
             const isToday = getLocalIsoString(new Date()) === dateKey;
             
-            const isHoliday = isSchoolHoliday(cellDate);
+            const isNonWorkingDay = isSchoolHoliday(cellDate) || !!holidayMap[dateKey];
 
             return (
                 <div 
                     key={idx} 
                     className={`p-2 min-h-[120px] overflow-hidden transition-colors group ${
-                        isHoliday ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'
+                        isNonWorkingDay ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'
                     }`}
                 >
                     <div className="text-sm font-bold text-slate-400 mb-1 flex justify-between items-center">
