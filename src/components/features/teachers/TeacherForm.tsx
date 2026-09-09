@@ -4,7 +4,6 @@ import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
-import { PricingModal } from '../billing/PricingModal';
 
 interface ScheduleCourseFormProps {
   initialData?: CourseInstance | null;
