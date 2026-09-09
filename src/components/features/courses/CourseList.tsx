@@ -11,7 +11,14 @@ import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
 import { CourseForm } from './CourseForm';
 
-// --- THE FIX: Forces dates into exact local time based on the Cohort settings ---
+// Helper to strictly format dates to Local YYYY-MM-DD to avoid timezone shifts
+const getLocalIsoString = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 const applyLocalTimeFix = (events: any[], instance: any) => {
     return events.map(ev => {
         const originalDate = new Date(ev.start);
@@ -62,14 +69,15 @@ export const CourseList = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
 
-      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes] = await Promise.all([
+      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes, settingsRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'), 
         ApiService.getSubjects(),
         ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('schedule_overrides').select('*') 
+        supabase.from('schedule_overrides').select('*'),
+        ApiService.getSettings().catch(() => null)
       ]);
 
       setScheduleOverrides(overridesRes.data || []); 
@@ -78,6 +86,20 @@ export const CourseList = () => {
       let filteredTemplates = tRes || [];
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
+      let rawYears = yearRes || [];
+
+      // STRICT STATE FILTERING FOR ACADEMIC YEARS
+      const rawState = settingsRes?.state || settingsRes?.default_state;
+      let filteredYears = rawYears;
+      if (rawState) {
+          const cleanSelectedState = rawState.toString().trim().toUpperCase();
+          const stateMatched = rawYears.filter((y: any) => {
+              if (!y.state) return true;
+              return y.state.toString().trim().toUpperCase() === cleanSelectedState;
+          });
+          if (stateMatched.length > 0) filteredYears = stateMatched;
+      }
+      setAcademicYears(filteredYears);
 
       if (user) {
           let myOrgId = null;
@@ -130,7 +152,7 @@ export const CourseList = () => {
       setAllocations(filteredAllocations);
       setTeachers(filteredTeachers); 
       setSubjects(subRes || []);
-      setAcademicYears(yearRes || []);
+      
     } catch (error) {
       console.error("Dashboard Load Error:", error);
     } finally {
@@ -268,21 +290,96 @@ export const CourseList = () => {
       let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
       events = applyLocalTimeFix(events, instance);
 
+      if (events.length === 0) {
+          alert("No schedule dates generated. Please edit the cohort and verify settings.");
+          return;
+      }
+
+      events.sort((a,b) => a.start.getTime() - b.start.getTime());
+
+      // Merge standard events with holidays and term markers
+      const merged = events.map(e => ({ ...e, type: 'class' }));
+      const firstDate = new Date(events[0].start);
+      firstDate.setHours(0,0,0,0);
+      const lastDate = new Date(events[events.length - 1].start);
+      lastDate.setHours(23,59,59,999);
+
+      const timelineInjections: any[] = [];
+      
+      academicYears.forEach((y: any) => {
+          if (Array.isArray(y.terms)) {
+              y.terms.forEach((t: any) => {
+                  const tStart = new Date(t.start_date || t.start);
+                  if (isNaN(tStart.getTime())) return;
+                  tStart.setHours(0,0,0,0);
+                  if (tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
+                      timelineInjections.push({ type: 'term_marker', start: tStart, summary: t.name || 'Term Start' });
+                  }
+              });
+          }
+
+          if (Array.isArray(y.holidays)) {
+              y.holidays.forEach((h: any) => {
+                  const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
+                  if (isNaN(hDate.getTime())) return;
+                  hDate.setHours(12,0,0,0);
+                  if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
+                      timelineInjections.push({ type: 'holiday', start: hDate, summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break') });
+                  }
+              });
+          }
+      });
+
+      const exDates = Array.isArray((instance as any).excluded_dates) ? (instance as any).excluded_dates : [];
+      exDates.forEach(dStr => {
+          const dDate = new Date(dStr);
+          dDate.setHours(12,0,0,0);
+          if (dDate.getTime() >= firstDate.getTime() && dDate.getTime() <= lastDate.getTime()) {
+              const isDup = timelineInjections.some(kh => getLocalIsoString(kh.start) === getLocalIsoString(dDate));
+              if (!isDup) {
+                  timelineInjections.push({ type: 'manual_skip', start: dDate, summary: 'Manually Skipped Date' });
+              }
+          }
+      });
+
+      const fullTimeline = [...merged, ...timelineInjections].sort((a, b) => {
+          if (a.start.getTime() === b.start.getTime()) {
+              if (a.type === 'term_marker') return -1;
+              if (b.type === 'term_marker') return 1;
+          }
+          return a.start.getTime() - b.start.getTime();
+      });
+
       const printWindow = window.open('', '', 'height=800,width=1000');
       if (!printWindow) {
           alert("Popup blocked! Please allow popups for this site to view the schedule.");
           return;
       }
 
-      const tableRowsHtml = events.map(ev => {
-          const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === ev.subjectId);
+      let classCounterPrint = 1;
+      const tableRowsHtml = fullTimeline.map(item => {
+          if (item.type === 'term_marker') {
+              return `<tr class="term-row"><td colspan="4">🚩 ${item.summary} Begins</td></tr>`;
+          }
+          if (item.type === 'holiday' || item.type === 'manual_skip') {
+              return `<tr class="holiday-row">
+                        <td style="text-align: center;">-</td>
+                        <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong></td>
+                        <td colspan="2">🌴 ${item.summary} (No Class)</td>
+                      </tr>`;
+          }
+
+          const cNum = classCounterPrint++;
+          const alloc = allocations.find(a => a.instance_id === instance.id && a.subject_id === item.subjectId);
           const teacher = teachers.find(t => t.id === alloc?.teacher_id);
-          const dateStr = ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
-          const timeStr = ev.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' });
+          const dateStr = item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+          const timeStr = item.start.toLocaleTimeString('en-AU', { hour: '2-digit', minute:'2-digit' });
           const teacherName = teacher?.name || '<span style="color:#94a3b8;font-style:italic;">Unassigned</span>';
+
           return `<tr>
+                    <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
                     <td><strong>${dateStr}</strong><br/><span style="font-size:12px;color:#64748b">${timeStr}</span></td>
-                    <td>${ev.summary}</td>
+                    <td>${item.summary}</td>
                     <td>${teacherName}</td>
                   </tr>`;
       }).join('');
@@ -299,8 +396,10 @@ export const CourseList = () => {
               body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #334155; }
               #pdf-content { padding: 20px; background: white; }
               table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
-              th { background: #f8fafc; padding: 14px; text-align: left; border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; }
+              th { background: #f8fafc; padding: 14px; text-align: left; border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; text-transform: uppercase; font-size: 12px; }
               td { padding: 14px; border-bottom: 1px solid #f1f5f9; }
+              tr.term-row td { background: #1e293b; color: white; font-weight: bold; text-transform: uppercase; font-size: 11px; padding: 8px 14px; }
+              tr.holiday-row td { background: #fef3c7; color: #92400e; font-weight: 600; font-size: 13px; }
               .controls { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin-bottom: 30px; display: flex; gap: 12px; align-items: center; }
               button { padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: all 0.2s; }
               .btn-print { background: #64748b; color: white; }
@@ -331,7 +430,14 @@ export const CourseList = () => {
                 <p style="color: #64748b; margin-top: 0; margin-bottom: 24px; font-size: 16px;">Class Schedule</p>
                 
                 <table>
-                  <thead><tr><th>Date & Time</th><th>Unit</th><th>Trainer</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th style="width: 50px; text-align: center;">#</th>
+                      <th style="width: 160px;">Date & Time</th>
+                      <th>Unit / Cluster</th>
+                      <th style="width: 200px;">Trainer</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     ${tableRowsHtml}
                   </tbody>
@@ -370,7 +476,7 @@ export const CourseList = () => {
 
   const getInstanceStats = (instance: CourseInstance) => {
     const template = templates.find(t => t.id === instance.template_id);
-    if (!template) return { total: 0, assigned: 0, unallocatedHours: 0, hasClash: false };
+    if (!template) return { total: 0, assigned: 0, unallocatedHours: 0, hasClash: false, endDateStr: '' };
     
     const rawSeq = (template as any).sequenced_subjects || [];
     const requiredIds = rawSeq.map((item: any) => typeof item === 'string' ? item : item.id).filter(Boolean);
@@ -390,21 +496,29 @@ export const CourseList = () => {
     });
 
     let hasClash = false;
-    // --- THE FIX: Calculate clashes dynamically for Flexible schedules ---
-    if ((instance as any).scheduling_mode === 'flexible') {
-        const events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
-        const dateCounts: Record<string, number> = {};
-        for(const ev of events) {
-            const dateStr = ev.start.toLocaleDateString('en-CA');
-            dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1;
-            if (dateCounts[dateStr] > 1) {
-                hasClash = true;
-                break;
+    let endDateStr = '';
+    
+    // Generate events temporarily to find the exact end date and check for clashes
+    let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+    
+    if (events.length > 0) {
+        events.sort((a,b) => a.start.getTime() - b.start.getTime());
+        endDateStr = events[events.length - 1].start.toLocaleDateString('en-CA');
+
+        if ((instance as any).scheduling_mode === 'flexible') {
+            const dateCounts: Record<string, number> = {};
+            for(const ev of events) {
+                const dateStr = ev.start.toLocaleDateString('en-CA');
+                dateCounts[dateStr] = (dateCounts[dateStr] || 0) + 1;
+                if (dateCounts[dateStr] > 1) {
+                    hasClash = true;
+                    break;
+                }
             }
         }
     }
 
-    return { total, assigned: assignedCount, unallocatedHours, hasClash };
+    return { total, assigned: assignedCount, unallocatedHours, hasClash, endDateStr };
   };
 
   const filteredInstances = instances.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -423,7 +537,6 @@ export const CourseList = () => {
           </p>
         </div>
         
-        {/* Buttons are unrestricted so everyone can manage cohorts if needed */}
         <div className="flex gap-3">
             <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
                 {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
@@ -480,7 +593,6 @@ export const CourseList = () => {
                             </span>
                         )}
 
-                        {/* THE NEW ORANGE CLASH PILL */}
                         {stats.hasClash && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-50 text-orange-700 text-[10px] font-bold border border-orange-200">
                                 <AlertTriangle size={10}/> Multiple Subjects on Same Day
@@ -489,7 +601,9 @@ export const CourseList = () => {
                     </div>
                   </td>
                   <td className="p-4 text-sm text-slate-600">{templates.find(t => t.id === instance.template_id)?.name}</td>
-                  <td className="p-4 text-sm font-bold text-slate-700">{instance.start_date} to {instance.end_date}</td>
+                  <td className="p-4 text-sm font-bold text-slate-700">
+                      {instance.start_date} {stats.endDateStr ? `to ${stats.endDateStr}` : ''}
+                  </td>
                   <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
                           <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600" title="Print/Download Schedule"><FileText size={18} /></button>
