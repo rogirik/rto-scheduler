@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle } from 'lucide-react';
+import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
 
 interface ScheduleCourseFormProps {
@@ -15,6 +15,13 @@ const DAYS_MAP = [
     { id: 0, label: 'Sun', short: 'S' }, { id: 1, label: 'Mon', short: 'M' }, { id: 2, label: 'Tue', short: 'T' },
     { id: 3, label: 'Wed', short: 'W' }, { id: 4, label: 'Thu', short: 'T' }, { id: 5, label: 'Fri', short: 'F' }, { id: 6, label: 'Sat', short: 'S' }
 ];
+
+const getLocalIsoString = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
 
 export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: ScheduleCourseFormProps) => {
   const [loading, setLoading] = useState(false);
@@ -71,7 +78,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     fetchDependencies();
   }, [initialData]);
 
-  // --- LIVE SCHEDULE GENERATOR ---
   useEffect(() => {
       if (!formData.template_id || !formData.start_date) {
           setGeneratedEvents([]);
@@ -84,8 +90,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
           
           let events = generateAllEventsForInstance(mockInstance, academicYears, selectedTemplate, subjects, [], []);
-          
-          // Sort events strictly chronologically
           events = events.sort((a, b) => a.start.getTime() - b.start.getTime());
           
           setGeneratedEvents(events);
@@ -94,6 +98,55 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
       return () => clearTimeout(timer);
   }, [formData, templates, subjects, academicYears, formData.scheduling_mode, formData.subject_rules, formData.additional_dates, formData.excluded_dates]);
+
+  const timeline = useMemo(() => {
+      if (generatedEvents.length === 0) return [];
+      
+      const merged = generatedEvents.map(e => ({ ...e, type: 'class' }));
+      
+      const firstDate = new Date(formData.start_date);
+      firstDate.setHours(0,0,0,0);
+      const lastDate = new Date(generatedEvents[generatedEvents.length - 1].start);
+      lastDate.setHours(23,59,59,999);
+
+      const knownHolidays: any[] = [];
+      
+      academicYears.forEach((y: any) => {
+          if (Array.isArray(y.holidays)) {
+              y.holidays.forEach((h: any) => {
+                  const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
+                  if (isNaN(hDate.getTime())) return;
+                  hDate.setHours(12,0,0,0); 
+                  
+                  if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
+                      knownHolidays.push({
+                          type: 'holiday',
+                          start: hDate,
+                          summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break')
+                      });
+                  }
+              });
+          }
+      });
+
+      formData.excluded_dates.forEach(dStr => {
+          const dDate = new Date(dStr);
+          dDate.setHours(12,0,0,0);
+          
+          if (dDate.getTime() >= firstDate.getTime() && dDate.getTime() <= lastDate.getTime()) {
+              const isDuplicate = knownHolidays.some(kh => getLocalIsoString(kh.start) === getLocalIsoString(dDate));
+              if (!isDuplicate) {
+                  knownHolidays.push({
+                      type: 'manual_skip',
+                      start: dDate,
+                      summary: 'Manually Skipped Date'
+                  });
+              }
+          }
+      });
+
+      return [...merged, ...knownHolidays].sort((a, b) => a.start.getTime() - b.start.getTime());
+  }, [generatedEvents, academicYears, formData.start_date, formData.excluded_dates]);
 
   const toggleGlobalDay = (dayId: number) => {
     setFormData(prev => ({
@@ -136,11 +189,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   };
 
   const handleSkipDateFromList = (dateObj: Date) => {
-      const y = dateObj.getFullYear();
-      const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-      const d = String(dateObj.getDate()).padStart(2, '0');
-      const dateStr = `${y}-${m}-${d}`;
-
+      const dateStr = getLocalIsoString(dateObj);
       if (!formData.excluded_dates.includes(dateStr)) {
           setFormData(prev => ({ ...prev, excluded_dates: [...prev.excluded_dates, dateStr].sort() }));
       }
@@ -207,7 +256,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     }
   };
 
-  // Resolve Subjects for the active template
   const selectedTemplate = templates.find(t => t.id === formData.template_id);
   const seqSubjects = (selectedTemplate as any)?.sequenced_subjects || (selectedTemplate as any)?.sequencedSubjects || [];
   
@@ -224,7 +272,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   let estimatedCompletion = '';
   if (generatedEvents.length > 0) estimatedCompletion = generatedEvents[generatedEvents.length - 1].start.toLocaleDateString('en-CA'); 
 
-  // --- NEW: CLASH DETECTION ---
   const dateCounts: Record<string, number> = {};
   generatedEvents.forEach(ev => {
       const d = ev.start.toLocaleDateString('en-CA');
@@ -233,6 +280,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const overlappingDates = Object.keys(dateCounts).filter(d => dateCounts[d] > 1);
   const hasOverlaps = formData.scheduling_mode === 'flexible' && overlappingDates.length > 0;
 
+  let classCounter = 1;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -240,7 +289,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Automatically skips term breaks and holidays.</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Automatically schedules around recorded term breaks and holidays.</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
         </div>
@@ -308,7 +357,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             </button>
                         </div>
 
-                        {/* MODE: CONSECUTIVE */}
                         {formData.scheduling_mode === 'consecutive' && (
                             <div className="bg-blue-50/50 border border-blue-100 p-5 rounded-xl space-y-3 animate-in fade-in">
                                 <p className="text-xs text-blue-700 font-medium">Subjects will run one after the other on these selected days.</p>
@@ -328,7 +376,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             </div>
                         )}
 
-                        {/* MODE: FLEXIBLE */}
                         {formData.scheduling_mode === 'flexible' && (
                             <div className="bg-purple-50/50 border border-purple-100 p-5 rounded-xl space-y-4 animate-in fade-in">
                                 <p className="text-xs text-purple-700 font-medium">Assign specific dates and days to individual subjects to run them concurrently.</p>
@@ -384,46 +431,66 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             </div>
 
             {/* RIGHT SIDE: Live Schedule & Overrides */}
-            <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative">
+            <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
                     {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
                 </div>
 
-                {/* THE OVERLAP BANNER */}
                 {hasOverlaps && (
                     <div className="mx-4 mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg flex items-start gap-2 text-orange-800 text-sm shadow-sm animate-in slide-in-from-top-2">
                         <AlertTriangle size={18} className="mt-0.5 shrink-0 text-orange-500" />
                         <div>
                             <strong className="block">Schedule Overlap Detected</strong>
-                            <span className="text-xs opacity-90 block mt-0.5">Multiple subjects are scheduled on the same calendar day. Review the highlighted dates below to ensure this is intentional.</span>
+                            <span className="text-xs opacity-90 block mt-0.5">Multiple subjects are scheduled on the same calendar day.</span>
                         </div>
                     </div>
                 )}
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
-                    {generatedEvents.length === 0 ? (
+                    {timeline.length === 0 ? (
                         <div className="text-center py-10 text-slate-400 italic text-sm">Select a Template and Start Date to generate the schedule.</div>
                     ) : (
-                        generatedEvents.map((ev, idx) => {
-                            const dateStr = ev.start.toLocaleDateString('en-CA');
+                        timeline.map((item, idx) => {
+                            
+                            if (item.type === 'holiday' || item.type === 'manual_skip') {
+                                return (
+                                    <div key={`gap-${idx}`} className="p-2.5 mx-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 flex items-center justify-between gap-3 opacity-80">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-6 flex justify-center text-slate-400"><CalendarOff size={16} /></div>
+                                            <div>
+                                                <div className="font-bold text-slate-600 text-sm">{item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+                                                <div className="text-[10px] font-bold text-slate-500 uppercase">{item.summary}</div>
+                                            </div>
+                                        </div>
+                                        {item.type === 'manual_skip' && (
+                                            <button type="button" onClick={() => removeOverrideDate('exclude', getLocalIsoString(item.start))} className="text-slate-400 hover:text-red-500 p-1 transition-colors" title="Restore Date">
+                                                <RotateCcw size={14} />
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            }
+
+                            const dateStr = item.start.toLocaleDateString('en-CA');
                             const isOverlap = formData.scheduling_mode === 'flexible' && overlappingDates.includes(dateStr);
+                            const currentClassNum = classCounter++;
 
                             return (
-                                <div key={idx} className={`p-3 rounded-lg border shadow-sm flex items-center justify-between gap-4 group transition-colors ${isOverlap ? 'bg-orange-50 border-orange-200 hover:border-orange-300' : 'bg-white border-slate-200 hover:border-red-200'}`}>
+                                <div key={`class-${idx}`} className={`p-3 rounded-lg border shadow-sm flex items-center justify-between gap-4 group transition-colors ${isOverlap ? 'bg-orange-50 border-orange-200 hover:border-orange-300' : 'bg-white border-slate-200 hover:border-red-200'}`}>
                                     <div className="flex items-center gap-4 flex-1">
-                                        <div className="text-xs font-bold text-slate-300 w-6">{idx + 1}</div>
+                                        <div className="text-xs font-bold text-slate-300 w-6">{currentClassNum}</div>
                                         <div>
                                             <div className={`font-bold text-sm ${isOverlap ? 'text-orange-800' : 'text-slate-700'} flex items-center gap-2`}>
-                                                {ev.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                                                {item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
                                                 {isOverlap && <AlertTriangle size={14} className="text-orange-500" title="Multiple subjects scheduled on this day" />}
                                             </div>
-                                            {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{ev.summary}</div>}
+                                            {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{item.summary}</div>}
                                         </div>
                                     </div>
                                     <button 
-                                        type="button" onClick={() => handleSkipDateFromList(ev.start)}
+                                        type="button" onClick={() => handleSkipDateFromList(item.start)}
                                         className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1" title="Skip this date"
                                     >
                                         <Trash2 size={16} />
@@ -434,7 +501,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                     )}
                 </div>
 
-                {/* MANUAL DATE CONTROLS */}
                 <div className="p-4 bg-white border-t border-slate-200 space-y-4">
                     <div>
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
@@ -453,25 +519,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             </div>
                         )}
                     </div>
-
-                    {formData.excluded_dates.length > 0 && (
-                        <>
-                            <div className="h-px bg-slate-100 w-full"></div>
-                            <div>
-                                <label className="block text-xs font-bold text-red-500 uppercase mb-2">Manually Skipped Dates</label>
-                                <div className="space-y-1.5 max-h-24 overflow-y-auto custom-scrollbar">
-                                    {formData.excluded_dates.map(d => (
-                                        <div key={d} className="flex justify-between items-center p-2 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
-                                            <span className="font-bold line-through opacity-75">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                            <button type="button" onClick={() => removeOverrideDate('exclude', d)} className="text-red-400 hover:text-red-600 transition-colors flex items-center gap-1" title="Restore this date">
-                                                <RotateCcw size={14} /> Restore
-                                            </button>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </>
-                    )}
                 </div>
             </div>
         </div>
