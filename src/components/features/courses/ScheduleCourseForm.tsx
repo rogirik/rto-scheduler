@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff } from 'lucide-react';
+import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff, Flag } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
 
 interface ScheduleCourseFormProps {
@@ -109,9 +109,27 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       const lastDate = new Date(generatedEvents[generatedEvents.length - 1].start);
       lastDate.setHours(23,59,59,999);
 
-      const knownHolidays: any[] = [];
+      const timelineInjections: any[] = [];
       
       academicYears.forEach((y: any) => {
+          // Add Term Start Markers
+          if (Array.isArray(y.terms)) {
+              y.terms.forEach((t: any) => {
+                  const tStart = new Date(t.start_date || t.start);
+                  if (isNaN(tStart.getTime())) return;
+                  tStart.setHours(0,0,0,0);
+                  
+                  if (tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
+                      timelineInjections.push({
+                          type: 'term_marker',
+                          start: tStart,
+                          summary: t.name || 'Term Start'
+                      });
+                  }
+              });
+          }
+
+          // Add Holidays
           if (Array.isArray(y.holidays)) {
               y.holidays.forEach((h: any) => {
                   const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
@@ -119,7 +137,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                   hDate.setHours(12,0,0,0); 
                   
                   if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
-                      knownHolidays.push({
+                      timelineInjections.push({
                           type: 'holiday',
                           start: hDate,
                           summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break')
@@ -129,14 +147,15 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           }
       });
 
+      // Add Manually Skipped Dates
       formData.excluded_dates.forEach(dStr => {
           const dDate = new Date(dStr);
           dDate.setHours(12,0,0,0);
           
           if (dDate.getTime() >= firstDate.getTime() && dDate.getTime() <= lastDate.getTime()) {
-              const isDuplicate = knownHolidays.some(kh => getLocalIsoString(kh.start) === getLocalIsoString(dDate));
+              const isDuplicate = timelineInjections.some(kh => getLocalIsoString(kh.start) === getLocalIsoString(dDate));
               if (!isDuplicate) {
-                  knownHolidays.push({
+                  timelineInjections.push({
                       type: 'manual_skip',
                       start: dDate,
                       summary: 'Manually Skipped Date'
@@ -145,7 +164,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           }
       });
 
-      return [...merged, ...knownHolidays].sort((a, b) => a.start.getTime() - b.start.getTime());
+      return [...merged, ...timelineInjections].sort((a, b) => {
+          // Ensure Term Markers sort *before* classes on the exact same day
+          if (a.start.getTime() === b.start.getTime()) {
+              if (a.type === 'term_marker') return -1;
+              if (b.type === 'term_marker') return 1;
+          }
+          return a.start.getTime() - b.start.getTime();
+      });
   }, [generatedEvents, academicYears, formData.start_date, formData.excluded_dates]);
 
   const toggleGlobalDay = (dayId: number) => {
@@ -454,6 +480,16 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                     ) : (
                         timeline.map((item, idx) => {
                             
+                            // TERM MARKER BANNER
+                            if (item.type === 'term_marker') {
+                                return (
+                                    <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
+                                        <Flag size={16} className="text-blue-400" /> {item.summary} Begins
+                                    </div>
+                                );
+                            }
+                            
+                            // HOLIDAYS & MANUAL SKIPS
                             if (item.type === 'holiday' || item.type === 'manual_skip') {
                                 return (
                                     <div key={`gap-${idx}`} className="p-2.5 mx-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 flex items-center justify-between gap-3 opacity-80">
@@ -473,6 +509,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 );
                             }
 
+                            // ACTUAL CLASS ROW
                             const dateStr = item.start.toLocaleDateString('en-CA');
                             const isOverlap = formData.scheduling_mode === 'flexible' && overlappingDates.includes(dateStr);
                             const currentClassNum = classCounter++;
