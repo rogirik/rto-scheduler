@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Calendar as CalIcon, Clock, User, X, Filter, Download, Printer, Globe, MapPin, CalendarOff } from 'lucide-react';
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -25,7 +25,8 @@ export const CalendarView = () => {
   const [events, setEvents] = useState<any[]>([]);
   const [instances, setInstances] = useState<any[]>([]); 
   const [teachers, setTeachers] = useState<any[]>([]);
-  const [academicYears, setAcademicYears] = useState<any[]>([]); // Stored for CSV Export
+  const [academicYears, setAcademicYears] = useState<any[]>([]);
+  const [holidayMap, setHolidayMap] = useState<Record<string, string>>({});
   
   const [selectedFilter, setSelectedFilter] = useState('all'); 
   const [filterType, setFilterType] = useState<'all' | 'cohort' | 'teacher'>('all');
@@ -40,14 +41,15 @@ export const CalendarView = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       
-      const [iRes, tRes, subRes, yearRes, aRes, teachRes, overridesRes] = await Promise.all([
+      const [iRes, tRes, subRes, yearRes, aRes, teachRes, overridesRes, settingsRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll('course_templates'),
         ApiService.getSubjects(),
         ApiService.getAll('academic_years'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'),
-        supabase.from('schedule_overrides').select('*') 
+        supabase.from('schedule_overrides').select('*'),
+        ApiService.getSettings().catch(() => null)
       ]);
 
       let filteredInstances = iRes || [];
@@ -55,7 +57,30 @@ export const CalendarView = () => {
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
       let filteredSubjects = subRes || [];
-      let filteredYears = yearRes || [];
+      let rawYears: any[] = yearRes || [];
+
+      // Filter academic years strictly by the state selected in Settings (if configured)
+      const selectedState = settingsRes?.state || settingsRes?.default_state;
+      let filteredYears = rawYears;
+      if (selectedState) {
+          const stateMatched = rawYears.filter((y: any) => !y.state || y.state.toUpperCase() === selectedState.toUpperCase());
+          if (stateMatched.length > 0) filteredYears = stateMatched;
+      }
+
+      // Build holiday lookup map (dateKey -> holiday name)
+      const hMap: Record<string, string> = {};
+      filteredYears.forEach((y: any) => {
+          if (Array.isArray(y.holidays)) {
+              y.holidays.forEach((h: any) => {
+                  const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
+                  if (!isNaN(hDate.getTime())) {
+                      const key = getLocalIsoString(hDate);
+                      hMap[key] = typeof h === 'string' ? 'Public Holiday' : (h.name || 'Public Holiday');
+                  }
+              });
+          }
+      });
+      setHolidayMap(hMap);
 
       if (user) {
           let myOrgId = null;
@@ -74,7 +99,7 @@ export const CalendarView = () => {
           }
 
           const isMine = (item: any) => {
-              if (myOrgId && item.organization_id === myOrgId) return true;
+              if (myOrgId && item.organization_id) return true;
               return item.user_id === user.id;
           };
 
@@ -94,7 +119,7 @@ export const CalendarView = () => {
 
       setInstances(filteredInstances);
       setTeachers(filteredTeachers);
-      setAcademicYears(filteredYears); // Store this for the CSV export logic
+      setAcademicYears(filteredYears);
 
       let allGeneratedEvents: any[] = [];
 
@@ -213,7 +238,6 @@ export const CalendarView = () => {
     return merged;
   };
 
-  // NEW: Calculates which Term a specific date falls into based on database settings
   const getTermForDate = (date: Date) => {
       const time = date.getTime();
       for (const y of academicYears) {
@@ -288,6 +312,7 @@ export const CalendarView = () => {
                  return getLocalIsoString(e.start) === dateKey;
              });
              
+             const holidayTitle = holidayMap[dateKey];
              const uniqueSummaries = Array.from(new Set(dayEvents.map(e => e.summary)));
              
              const eventsHtml = uniqueSummaries.map(summary => {
@@ -300,7 +325,9 @@ export const CalendarView = () => {
                  `;
              }).join('');
 
-             cellsHtml += `<div class="cell"><div class="day-num">${dayNum}</div>${eventsHtml}</div>`;
+             const holidayHtml = holidayTitle ? `<div style="color: #d97706; font-size: 10px; font-weight: bold; margin-bottom: 4px;">🌴 ${holidayTitle}</div>` : '';
+
+             cellsHtml += `<div class="cell ${holidayTitle ? 'bg-amber' : ''}"><div class="day-num">${dayNum}</div>${holidayHtml}${eventsHtml}</div>`;
         } else {
              cellsHtml += `<div class="cell bg-gray"></div>`;
         }
@@ -320,6 +347,7 @@ export const CalendarView = () => {
             .header-cell { background: #f1f5f9; padding: 10px; text-align: center; font-weight: bold; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; text-transform: uppercase; font-size: 12px; color: #475569; }
             .cell { border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; min-height: 120px; padding: 8px; }
             .bg-gray { background: #f8fafc; }
+            .bg-amber { background: #fffbeb; }
             .day-num { font-weight: bold; color: #333; margin-bottom: 8px; font-size: 14px; }
             .event { margin-bottom: 8px; font-size: 11px; line-height: 1.4; }
             .subject { font-weight: bold; color: #0f172a; }
@@ -450,13 +478,26 @@ export const CalendarView = () => {
                 return getLocalIsoString(e.start) === dateKey;
             });
 
+            const holidayTitle = holidayMap[dateKey];
             const isToday = getLocalIsoString(new Date()) === dateKey;
 
             return (
-                <div key={idx} className="bg-white p-2 min-h-[120px] overflow-hidden hover:bg-slate-50 transition-colors group">
-                    <div className="text-sm font-bold text-slate-400 mb-1 flex justify-between">
+                <div 
+                    key={idx} 
+                    className={`p-2 min-h-[120px] overflow-hidden transition-colors group ${
+                        holidayTitle ? 'bg-amber-50/70 hover:bg-amber-50' : 'bg-white hover:bg-slate-50'
+                    }`}
+                >
+                    <div className="text-sm font-bold text-slate-400 mb-1 flex justify-between items-center">
                         <span className={isToday ? "bg-blue-600 text-white w-6 h-6 flex items-center justify-center rounded-full shadow-sm" : ""}>{day}</span>
-                        {dayEvents.length > 0 && <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 font-bold">{dayEvents.length}</span>}
+                        <div className="flex items-center gap-1">
+                            {holidayTitle && (
+                                <span className="text-[10px] bg-amber-200/80 text-amber-900 px-1.5 py-0.5 rounded font-bold truncate max-w-[80px]" title={holidayTitle}>
+                                    🌴 {holidayTitle}
+                                </span>
+                            )}
+                            {dayEvents.length > 0 && <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 font-bold">{dayEvents.length}</span>}
+                        </div>
                     </div>
                     
                     <div className="space-y-1.5 overflow-y-auto max-h-[140px] pr-1 custom-scrollbar">
