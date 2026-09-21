@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import type { Subject } from '../../../services/api';
-import { Clock, Pencil, Plus, FileText, Loader2 } from 'lucide-react';
+import { Clock, Pencil, Plus, FileText, Loader2, Trash2 } from 'lucide-react';
 import { Modal } from '../../shared/Modal';
 import { SubjectForm } from './SubjectForm';
 
@@ -86,6 +86,20 @@ export const SubjectList = () => {
     setIsModalOpen(true);
   };
 
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to permanently delete this subject?')) return;
+    
+    try {
+      setLoading(true);
+      await ApiService.delete('subjects' as any, id);
+      await loadData();
+    } catch (error) {
+      console.error("Failed to delete subject", error);
+      alert("Failed to delete subject. It might be assigned to a template or cohort.");
+      setLoading(false);
+    }
+  };
+
   if (loading) return <div className="flex justify-center p-12"><Loader2 className="animate-spin text-blue-500" size={40} /></div>;
 
   return (
@@ -141,12 +155,22 @@ export const SubjectList = () => {
                 </div>
                 
                 {userRole === 'admin' && (
-                    <button 
-                      onClick={() => handleEdit(subject)}
-                      className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-full transition-colors opacity-0 group-hover:opacity-100"
-                    >
-                      <Pencil size={18} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={() => handleEdit(subject)}
+                        className="text-slate-400 hover:text-blue-600 p-2 hover:bg-blue-50 rounded-full transition-colors"
+                        title="Edit Subject"
+                      >
+                        <Pencil size={18} />
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(subject.id)}
+                        className="text-slate-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-full transition-colors"
+                        title="Delete Subject"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
                 )}
               </div>
 
