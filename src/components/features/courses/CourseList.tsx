@@ -5,7 +5,7 @@ import type { CourseInstance, Course, UnitAllocation, Teacher, Subject, Academic
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
   Plus, Search, FileText, Settings, Loader2, Trash2, 
-  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Clock
+  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Clock, Archive, History, ArchiveRestore
 } from 'lucide-react';
 import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
@@ -40,8 +40,10 @@ const applyLocalTimeFix = (events: any[], instance: any) => {
 export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   
   const [userRole, setUserRole] = useState<'admin' | 'teacher'>('teacher');
+  const [viewMode, setViewMode] = useState<'active' | 'archived'>('active');
   
   const [instances, setInstances] = useState<CourseInstance[]>([]);
   const [templates, setTemplates] = useState<Course[]>([]);
@@ -86,9 +88,8 @@ export const CourseList = () => {
       let filteredTeachers = teachRes.data || [];
       let rawYears = yearRes || [];
 
-      // --- THE FIX: DEEP STATE FILTERING ---
       const isStateMatch = (itemState: any, selectedState: string) => {
-          if (!itemState) return true; // Global/National
+          if (!itemState) return true; 
           const s = itemState.toString().trim().toUpperCase();
           if (s === 'NATIONAL' || s === 'ALL') return true;
           return s.includes(selectedState);
@@ -103,11 +104,9 @@ export const CourseList = () => {
               .filter((y: any) => isStateMatch(y.state, cleanState))
               .map((y: any) => {
                   const yCopy = { ...y };
-                  // Filter individual terms
                   if (Array.isArray(yCopy.terms)) {
                       yCopy.terms = yCopy.terms.filter((t: any) => isStateMatch(t.state, cleanState));
                   }
-                  // Filter individual holidays
                   if (Array.isArray(yCopy.holidays)) {
                       yCopy.holidays = yCopy.holidays.filter((h: any) => {
                           const hState = typeof h === 'object' ? h.state : null;
@@ -183,6 +182,68 @@ export const CourseList = () => {
     try { await ApiService.delete(table as any, id); loadData(); } catch (e) { alert("Delete failed."); }
   };
 
+  const handleToggleArchive = async (id: string, currentStatus: string) => {
+    const newStatus = currentStatus === 'archived' ? 'active' : 'archived';
+    try {
+        await supabase.from('course_instances').update({ status: newStatus }).eq('id', id);
+        loadData();
+    } catch(e) {
+        alert("Failed to update status.");
+    }
+  };
+
+  // --- NEW: AUTO ARCHIVE ENGINE ---
+  const handleAutoArchive = async () => {
+      if (!confirm("This will scan all active cohorts and automatically archive any that have passed their final scheduled class date. Proceed?")) return;
+      setArchiving(true);
+      
+      try {
+          const today = new Date();
+          today.setHours(0,0,0,0);
+          const toArchiveIds: string[] = [];
+
+          instances.forEach(instance => {
+              // Skip if already archived
+              if (instance.status === 'archived' || instance.status === 'completed') return;
+
+              const template = templates.find(t => t.id === instance.template_id);
+              if (!template) return;
+
+              let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+              
+              if (events.length > 0) {
+                  events.sort((a,b) => a.start.getTime() - b.start.getTime());
+                  const lastEventDate = new Date(events[events.length - 1].start);
+                  lastEventDate.setHours(0,0,0,0);
+
+                  // If the final class date is strictly before today, flag for archiving
+                  if (lastEventDate.getTime() < today.getTime()) {
+                      toArchiveIds.push(instance.id);
+                  }
+              }
+          });
+
+          if (toArchiveIds.length === 0) {
+              alert("All active cohorts are up to date. Nothing to archive.");
+              setArchiving(false);
+              return;
+          }
+
+          // Batch update Supabase
+          for (const id of toArchiveIds) {
+              await supabase.from('course_instances').update({ status: 'archived' }).eq('id', id);
+          }
+
+          alert(`Success: ${toArchiveIds.length} expired cohort(s) have been moved to the Archive.`);
+          await loadData();
+      } catch (error) {
+          console.error(error);
+          alert("Failed to run auto-archive.");
+      } finally {
+          setArchiving(false);
+      }
+  };
+
   const handleGlobalAutoAssign = async () => {
     if (!confirm("Auto-assign trainers to EMPTY units across all active cohorts?")) return;
     setProcessing(true);
@@ -191,7 +252,7 @@ export const CourseList = () => {
         
         const allGlobalEvents: any[] = [];
         instances.forEach(inst => {
-            if (inst.status === 'completed') return;
+            if (inst.status === 'archived' || inst.status === 'completed') return;
             const temp = templates.find(t => t.id === inst.template_id);
             if (!temp) return;
             
@@ -221,7 +282,7 @@ export const CourseList = () => {
         };
 
         for (const instance of instances) {
-            if (instance.status === 'completed') continue;
+            if (instance.status === 'archived' || instance.status === 'completed') continue;
             const template = templates.find(t => t.id === instance.template_id);
             if (!template) continue;
             
@@ -323,7 +384,6 @@ export const CourseList = () => {
 
       const timelineInjections: any[] = [];
       
-      // The academicYears array is already deeply filtered by state!
       academicYears.forEach((y: any) => {
           if (Array.isArray(y.terms)) {
               y.terms.forEach((t: any) => {
@@ -538,7 +598,12 @@ export const CourseList = () => {
     return { total, assigned: assignedCount, unallocatedHours, hasClash, endDateStr };
   };
 
-  const filteredInstances = instances.filter(i => i.name.toLowerCase().includes(searchTerm.toLowerCase()));
+  // Filter instances by active/archived toggle AND search term
+  const displayedInstances = instances.filter(i => {
+      const matchSearch = i.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchStatus = viewMode === 'active' ? (i.status !== 'archived' && i.status !== 'completed') : (i.status === 'archived' || i.status === 'completed');
+      return matchSearch && matchStatus;
+  });
 
   if (loading) return <div className="flex justify-center p-12"><Loader2 className="animate-spin text-blue-500" size={40} /></div>;
 
@@ -555,6 +620,9 @@ export const CourseList = () => {
         </div>
         
         <div className="flex gap-3">
+            <button onClick={handleAutoArchive} disabled={archiving} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-900 shadow-sm transition-all">
+                {archiving ? <Loader2 className="animate-spin" size={18} /> : <Archive size={18} />} Auto Archive
+            </button>
             <button onClick={handleGlobalAutoAssign} disabled={processing} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-purple-700 shadow-sm transition-all">
                 {processing ? <Loader2 className="animate-spin" size={18} /> : <ShieldAlert size={18} />} Global Auto Assign
             </button>
@@ -567,10 +635,26 @@ export const CourseList = () => {
         </div>
       </div>
 
-      <div className="bg-white p-4 rounded-xl shadow-sm border flex items-center gap-4">
-        <div className="relative flex-1">
+      <div className="bg-white p-4 rounded-xl shadow-sm border flex items-center justify-between gap-4">
+        
+        <div className="flex bg-slate-100 p-1 rounded-lg">
+            <button 
+                onClick={() => setViewMode('active')}
+                className={`px-6 py-1.5 rounded-md text-sm font-bold transition-all ${viewMode === 'active' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+                Active Cohorts
+            </button>
+            <button 
+                onClick={() => setViewMode('archived')}
+                className={`px-6 py-1.5 rounded-md text-sm font-bold transition-all flex items-center gap-1.5 ${viewMode === 'archived' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+                <History size={14} /> Archive
+            </button>
+        </div>
+
+        <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-2.5 text-slate-400" size={20} />
-          <input placeholder="Search active cohorts..." className="w-full pl-10 pr-4 py-2 border rounded-lg outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+          <input placeholder="Search cohorts..." className="w-full pl-10 pr-4 py-2 border rounded-lg outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
         </div>
       </div>
 
@@ -585,12 +669,18 @@ export const CourseList = () => {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredInstances.map(instance => {
+            {displayedInstances.length === 0 ? (
+                <tr>
+                    <td colspan={4} className="p-8 text-center text-slate-400 italic">
+                        {viewMode === 'active' ? 'No active cohorts found.' : 'Archive is empty.'}
+                    </td>
+                </tr>
+            ) : displayedInstances.map(instance => {
               const stats = getInstanceStats(instance);
               const isFullyAllocated = stats.total > 0 && stats.assigned === stats.total;
 
               return (
-                <tr key={instance.id} className="hover:bg-slate-50 transition-all">
+                <tr key={instance.id} className={`hover:bg-slate-50 transition-all ${viewMode === 'archived' ? 'opacity-70' : ''}`}>
                   <td className="p-4">
                     <div className="font-bold text-slate-800 text-lg">{instance.name}</div>
                     <div className="mt-1 flex flex-wrap gap-2">
@@ -615,6 +705,12 @@ export const CourseList = () => {
                                 <AlertTriangle size={10}/> Multiple Subjects on Same Day
                             </span>
                         )}
+
+                        {viewMode === 'archived' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold border border-slate-300">
+                                <Archive size={10}/> Archived
+                            </span>
+                        )}
                     </div>
                   </td>
                   <td className="p-4 text-sm text-slate-600">{templates.find(t => t.id === instance.template_id)?.name}</td>
@@ -625,9 +721,17 @@ export const CourseList = () => {
                       <div className="flex justify-end gap-2">
                           <button onClick={() => handleDownloadPDF(instance)} className="p-2 text-slate-400 hover:text-blue-600" title="Print/Download Schedule"><FileText size={18} /></button>
                           
-                          <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
-                          <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white">Assign</button>
-                          <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
+                          {viewMode === 'active' ? (
+                              <>
+                                  <button onClick={() => { setSelectedInstance(instance); setShowScheduleModal(true); }} className="p-2 text-slate-400 hover:text-blue-600" title="Edit Cohort"><Settings size={18} /></button>
+                                  <button onClick={() => setShowAllocator(instance)} className="px-4 py-2 rounded-lg font-bold text-xs bg-blue-600 text-white hover:bg-blue-700">Assign</button>
+                                  <button onClick={() => handleDelete('course_instances', instance.id)} className="p-2 text-slate-400 hover:text-red-600" title="Delete Cohort"><Trash2 size={18} /></button>
+                              </>
+                          ) : (
+                              <button onClick={() => handleToggleArchive(instance.id, 'archived')} className="px-3 py-1.5 rounded-lg font-bold text-xs bg-slate-200 text-slate-700 hover:bg-slate-300 flex items-center gap-1">
+                                  <ArchiveRestore size={14} /> Restore
+                              </button>
+                          )}
                       </div>
                     </td>
                 </tr>
