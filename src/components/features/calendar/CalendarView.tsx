@@ -56,52 +56,27 @@ export const CalendarView = () => {
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
       let filteredSubjects = subRes || [];
-      let rawYears: any[] = yearRes || [];
+      const rawYears: any[] = yearRes || [];
 
-      // --- THE FIX: DEEP STATE FILTERING ---
-      const isStateMatch = (itemState: any, selectedState: string) => {
-          if (!itemState) return true; // Global/National
-          const s = itemState.toString().trim().toUpperCase();
-          if (s === 'NATIONAL' || s === 'ALL') return true;
-          return s.includes(selectedState);
-      };
+      // 1. AGGRESSIVELY PARSE THE SPLIT JSON ROWS
+      const parsedYears = rawYears.map((y: any) => {
+          let parsedTerms = [];
+          let parsedHolidays = [];
+          try {
+              let rawT = y.terms;
+              while (typeof rawT === 'string') rawT = JSON.parse(rawT);
+              parsedTerms = Array.isArray(rawT) ? rawT : [];
 
-      const rawState = settingsRes?.state || settingsRes?.default_state;
-      let filteredYears = rawYears;
-      
-      if (rawState) {
-          const cleanState = rawState.toString().trim().toUpperCase();
-          filteredYears = rawYears
-              .filter((y: any) => isStateMatch(y.state, cleanState))
-              .map((y: any) => {
-                  const yCopy = { ...y };
-                  if (Array.isArray(yCopy.terms)) {
-                      yCopy.terms = yCopy.terms.filter((t: any) => isStateMatch(t.state, cleanState));
-                  }
-                  if (Array.isArray(yCopy.holidays)) {
-                      yCopy.holidays = yCopy.holidays.filter((h: any) => {
-                          const hState = typeof h === 'object' ? h.state : null;
-                          return isStateMatch(hState, cleanState);
-                      });
-                  }
-                  return yCopy;
-              });
-      }
-
-      // Build holiday lookup map
-      const hMap: Record<string, boolean> = {};
-      filteredYears.forEach((y: any) => {
-          if (Array.isArray(y.holidays)) {
-              y.holidays.forEach((h: any) => {
-                  const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
-                  if (!isNaN(hDate.getTime())) {
-                      hMap[getLocalIsoString(hDate)] = true;
-                  }
-              });
+              let rawH = y.holidays;
+              while (typeof rawH === 'string') rawH = JSON.parse(rawH);
+              parsedHolidays = Array.isArray(rawH) ? rawH : [];
+          } catch (e) {
+              console.error("Parse error for year", y.id, e);
           }
+          return { ...y, terms: parsedTerms, holidays: parsedHolidays };
       });
-      setHolidayMap(hMap);
 
+      // 2. IDENTIFY USER PERMISSIONS
       if (user) {
           let myOrgId = null;
           try {
@@ -135,19 +110,29 @@ export const CalendarView = () => {
 
       setInstances(filteredInstances);
       setTeachers(filteredTeachers);
-      setAcademicYears(filteredYears);
 
+      // 3. GENERATE EVENTS BY PASSING COHORT-SPECIFIC YEARS TO THE SCHEDULER
       const { generateAllEventsForInstance } = await import('../../../utils/scheduler');
       let allGeneratedEvents: any[] = [];
 
       filteredInstances.forEach((instance: any) => {
-        if (instance.status === 'completed') return; 
+        if (instance.status === 'completed' || instance.status === 'archived') return; 
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
+            // Find this specific cohort's state (fallback to global setting or VIC)
+            const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
+            
+            // Give the generator ONLY the academic years matching this cohort's state
+            const cohortYears = parsedYears.filter(y => {
+                if (!y.state) return true;
+                const s = y.state.toString().trim().toUpperCase();
+                return s === 'NATIONAL' || s === 'ALL' || s === instanceState;
+            });
+
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
-                filteredYears as any[], 
+                cohortYears, 
                 template as any, 
                 filteredSubjects as any[], 
                 filteredTeachers,
@@ -192,8 +177,29 @@ export const CalendarView = () => {
       allGeneratedEvents.forEach(ev => {
           if (!uniqueEventsMap.has(ev.uniqueKey)) uniqueEventsMap.set(ev.uniqueKey, ev);
       });
-      
       setEvents(Array.from(uniqueEventsMap.values()));
+
+      // 4. BUILD GLOBAL CALENDAR HOLIDAY MAP FOR BACKGROUND GREY OUTS
+      // We base the visual grey boxes on the main organization's state.
+      const globalState = (settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
+      const globalYears = parsedYears.filter(y => {
+          if (!y.state) return true;
+          const s = y.state.toString().trim().toUpperCase();
+          return s === 'NATIONAL' || s === 'ALL' || s === globalState;
+      });
+
+      const hMap: Record<string, boolean> = {};
+      globalYears.forEach((y: any) => {
+          y.holidays.forEach((h: any) => {
+              const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
+              if (!isNaN(hDate.getTime())) {
+                  hMap[getLocalIsoString(hDate)] = true;
+              }
+          });
+      });
+      
+      setHolidayMap(hMap);
+      setAcademicYears(globalYears);
 
     } catch (error) {
       console.error("Calendar Load Failed", error);
