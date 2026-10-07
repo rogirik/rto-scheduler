@@ -183,60 +183,76 @@ export const CourseList = () => {
   };
 
   const runStateMigration = async () => {
-      if (!confirm("This will split the 2026 JSON into separate states. Ready?")) return;
+      if (!confirm("This will scan ALL academic years and split their JSON into separate states. Ready?")) return;
       setProcessing(true);
 
       try {
-          const { data, error } = await supabase
+          // 1. Fetch ALL academic year rows
+          const { data: allYears, error } = await supabase
               .from('academic_years')
-              .select('*')
-              .eq('id', '2026')
-              .single();
+              .select('*');
 
-          if (error || !data) throw new Error("Could not find the original '2026' row.");
-
-          const rawTerms = typeof data.terms === 'string' ? JSON.parse(data.terms) : data.terms;
-          const rawHolidays = typeof data.holidays === 'string' ? JSON.parse(data.holidays) : data.holidays;
+          if (error || !allYears) throw new Error("Could not fetch academic years.");
 
           const states = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'ACT', 'TAS', 'NT'];
+          let migratedCount = 0;
 
-          for (const state of states) {
-              const stateTerms = rawTerms
-                  .filter((t: any) => t.name.toUpperCase().includes(state))
-                  .map((t: any) => ({
-                      ...t,
-                      name: t.name.replace(new RegExp(`^${state}\\s*-\\s*`, 'i'), '').trim()
-                  }));
+          // 2. Loop through every year found in the database
+          for (const yearData of allYears) {
+              // Skip rows that are already migrated (they will have a state assigned or a hyphen in the ID like '2026-VIC')
+              if (yearData.state || yearData.id.includes('-')) continue;
 
-              const stateHolidays = rawHolidays.filter((h: any) => {
-                  const hName = h.name.toUpperCase();
-                  const hasBrackets = hName.includes('(');
+              const rawTerms = typeof yearData.terms === 'string' ? JSON.parse(yearData.terms || '[]') : (yearData.terms || []);
+              const rawHolidays = typeof yearData.holidays === 'string' ? JSON.parse(yearData.holidays || '[]') : (yearData.holidays || []);
 
-                  if (!hasBrackets) return true; 
-                  if (hName.includes(`(${state})`)) return true; 
-                  if (hName.includes('NATIONAL EX')) {
-                      if (state === 'WA' && hName.includes('WA')) return false;
-                      if (state === 'QLD' && hName.includes('QLD')) return false;
-                      return true;
+              for (const state of states) {
+                  // Extract Terms for this state
+                  const stateTerms = rawTerms
+                      .filter((t: any) => t.name.toUpperCase().includes(state))
+                      .map((t: any) => ({
+                          ...t,
+                          name: t.name.replace(new RegExp(`^${state}\\s*-\\s*`, 'i'), '').trim()
+                      }));
+
+                  // Extract Holidays for this state
+                  const stateHolidays = rawHolidays.filter((h: any) => {
+                      const hName = (h.name || '').toUpperCase();
+                      const hasBrackets = hName.includes('(');
+
+                      if (!hasBrackets) return true; 
+                      if (hName.includes(`(${state})`)) return true; 
+                      if (hName.includes('NATIONAL EX')) {
+                          if (state === 'WA' && hName.includes('WA')) return false;
+                          if (state === 'QLD' && hName.includes('QLD')) return false;
+                          return true;
+                      }
+                      return false;
+                  });
+
+                  // If this state has any terms or holidays for this year, save it
+                  if (stateTerms.length > 0 || stateHolidays.length > 0) {
+                      const newRow = {
+                          id: `${yearData.id}-${state}`,
+                          user_id: yearData.user_id,
+                          state: state,
+                          terms: JSON.stringify(stateTerms),
+                          holidays: JSON.stringify(stateHolidays)
+                      };
+                      await supabase.from('academic_years').insert([newRow]);
                   }
-                  return false;
-              });
-
-              if (stateTerms.length > 0) {
-                  const newRow = {
-                      id: `2026-${state}`,
-                      user_id: data.user_id,
-                      state: state,
-                      terms: JSON.stringify(stateTerms),
-                      holidays: JSON.stringify(stateHolidays)
-                  };
-                  await supabase.from('academic_years').insert([newRow]);
               }
+
+              // 3. Delete the old combined row for this year
+              await supabase.from('academic_years').delete().eq('id', yearData.id);
+              migratedCount++;
           }
 
-          await supabase.from('academic_years').delete().eq('id', '2026');
-
-          alert("Migration complete! Your database is now cleanly separated by state.");
+          if (migratedCount === 0) {
+              alert("All years are already cleanly separated by state!");
+          } else {
+              alert(`Migration complete! Successfully split ${migratedCount} academic year(s).`);
+          }
+          
           await loadData();
           
       } catch (error: any) {
