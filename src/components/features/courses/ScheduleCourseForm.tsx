@@ -83,11 +83,11 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     fetchDependencies();
   }, [initialData]);
 
-  // NEW ULTRA-FAST FILTER: Only pull rows that match the exact state or are marked National
+  // NEW CLEAN FILTER: Since the database is split, we just grab the exact matching row!
   const filteredAcademicYears = useMemo(() => {
-      const selectedState = formData.state.toUpperCase();
+      const selectedState = (formData.state || 'VIC').toUpperCase();
       return rawAcademicYears.filter(y => {
-          if (!y.state) return true; 
+          if (!y.state) return true; // Keep any global/national fallback rows
           const s = y.state.toString().trim().toUpperCase();
           return s === 'NATIONAL' || s === 'ALL' || s === selectedState;
       });
@@ -385,9 +385,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Select the state to automatically apply the correct term breaks and holidays.</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size="{12}"/> Select the state to automatically apply the correct term breaks and holidays.</p>
           </div>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size="{24}"/></button>
         </div>
 
         <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
@@ -457,14 +457,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 onClick={() => setFormData({...formData, scheduling_mode: 'consecutive'})}
                                 className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-all ${formData.scheduling_mode === 'consecutive' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                             >
-                                <LayoutTemplate size={16} /> Consecutive
+                                <LayoutTemplate size="{16}"/> Consecutive
                             </button>
                             <button 
                                 type="button" 
                                 onClick={() => setFormData({...formData, scheduling_mode: 'flexible'})}
                                 className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-all ${formData.scheduling_mode === 'flexible' ? 'bg-white text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                             >
-                                <Layers size={16} /> Flexible (Per Subject)
+                                <Layers size="{16}"/> Flexible (Per Subject)
                             </button>
                         </div>
 
@@ -544,23 +544,23 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon className="text-blue-600" size="{18}"/> Class Schedule</h3>
                     <div className="flex items-center gap-2">
-                        {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
+                        {calculating && <Loader2 className="animate-spin text-blue-500" size="{16}"/>}
                         <button
                             type="button"
                             onClick={handleDownloadSchedulePDF}
                             className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 border border-slate-200"
                             title="Download Preview as PDF"
                         >
-                            <Download size={14} /> PDF
+                            <Download size="{14}"/> PDF
                         </button>
                     </div>
                 </div>
 
                 {hasOverlaps && (
                     <div className="mx-4 mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg flex items-start gap-2 text-orange-800 text-sm shadow-sm animate-in slide-in-from-top-2">
-                        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-orange-500" />
+                        <AlertTriangle className="mt-0.5 shrink-0 text-orange-500" size="{18}"/>
                         <div>
                             <strong className="block">Schedule Overlap Detected</strong>
                             <span className="text-xs opacity-90 block mt-0.5">Multiple subjects are scheduled on the same calendar day.</span>
@@ -577,7 +577,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             if (item.type === 'term_marker') {
                                 return (
                                     <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
-                                        <Flag size={16} className="text-blue-400" /> {item.summary}
+                                        <Flag className="text-blue-400" size="{16}"/> {item.summary}
                                     </div>
                                 );
                             }
@@ -586,7 +586,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 return (
                                     <div key={`gap-${idx}`} className="p-2.5 mx-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 flex items-center justify-between gap-3 opacity-80">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-6 flex justify-center text-slate-400"><CalendarOff size={16} /></div>
+                                            <div className="w-6 flex justify-center text-slate-400"><CalendarOff size="{16}"/></div>
                                             <div>
                                                 <div className="font-bold text-slate-600 text-sm">{item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
                                                 <div className="text-[10px] font-bold text-slate-500 uppercase">{item.summary}</div>
@@ -594,7 +594,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                         </div>
                                         {item.type === 'manual_skip' && (
                                             <button type="button" onClick={() => removeOverrideDate('exclude', getLocalIsoString(item.start))} className="text-slate-400 hover:text-red-500 p-1 transition-colors" title="Restore Date">
-                                                <RotateCcw size={14} />
+                                                <RotateCcw size="{14}"/>
                                             </button>
                                         )}
                                     </div>
@@ -612,7 +612,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                         <div>
                                             <div className={`font-bold text-sm ${isOverlap ? 'text-orange-800' : 'text-slate-700'} flex items-center gap-2`}>
                                                 {item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-                                                {isOverlap && <AlertTriangle size={14} className="text-orange-500" title="Multiple subjects scheduled on this day" />}
+                                                {isOverlap && <AlertTriangle className="text-orange-500" size="{14}" title="Multiple subjects scheduled on this day"/>}
                                             </div>
                                             {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{item.summary}</div>}
                                         </div>
@@ -621,7 +621,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                         type="button" onClick={() => handleSkipDateFromList(item.start)}
                                         className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1" title="Skip this date"
                                     >
-                                        <Trash2 size={16} />
+                                        <Trash2 size="{16}"/>
                                     </button>
                                 </div>
                             );
@@ -634,14 +634,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
                         <div className="flex gap-2">
                             <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
-                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
+                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size="{16}"/> Add Date</button>
                         </div>
                         {formData.additional_dates.length > 0 && (
                             <div className="mt-3 space-y-1.5 max-h-24 overflow-y-auto custom-scrollbar">
                                 {formData.additional_dates.map(d => (
                                     <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
                                         <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                        <button type="button" onClick={() => removeOverrideDate('add', d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                                        <button type="button" onClick={() => removeOverrideDate('add', d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size="{16}"/></button>
                                     </div>
                                 ))}
                             </div>
@@ -654,7 +654,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
             <button type="button" onClick={onClose} className="px-5 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-bold transition-colors">Cancel</button>
             <button type="submit" form="schedule-form" disabled={loading || calculating} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all">
-                {loading && <Loader2 className="animate-spin" size={16} />}
+                {loading && <Loader2 className="animate-spin" size="{16}"/>}
                 {initialData ? 'Update Cohort' : 'Generate Schedule'}
             </button>
         </div>
