@@ -83,13 +83,21 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     fetchDependencies();
   }, [initialData]);
 
-  // NEW CLEAN FILTER: Since the database is split, we just grab the exact matching row!
+  // AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
   const filteredAcademicYears = useMemo(() => {
       const selectedState = (formData.state || 'VIC').toUpperCase();
-      return rawAcademicYears.filter(y => {
-          if (!y.state) return true; // Keep any global/national fallback rows
-          const s = y.state.toString().trim().toUpperCase();
-          return s === 'NATIONAL' || s === 'ALL' || s === selectedState;
+      return rawAcademicYears.map(y => {
+          let t = (y as any).terms;
+          while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
+          let h = (y as any).holidays;
+          while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
+          return { ...y, terms: Array.isArray(t) ? t : [], holidays: Array.isArray(h) ? h : [] };
+      }).filter(y => {
+          const s = ((y as any).state || '').toString().toUpperCase();
+          if (s === 'NATIONAL' || s === 'ALL' || s === selectedState) return true;
+          if (y.id && String(y.id).toUpperCase().includes(`-${selectedState}`)) return true;
+          if (!s && !String(y.id).includes('-')) return true; // global fallback
+          return false;
       });
   }, [rawAcademicYears, formData.state]);
 
@@ -329,7 +337,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         const cNum = classCounterPrint++;
         return `<tr>
                     <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
-                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
+                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time \vert{}\vert{} '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
                     <td colspan="2"><strong>${item.summary}</strong></td>
                 </tr>`;
     }).join('');
@@ -544,9 +552,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon className="text-blue-600" size={18} /> Class Schedule</h3>
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
                     <div className="flex items-center gap-2">
-                        {calculating && <Loader2 className="animate-spin text-blue-500" size={16} />}
+                        {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
                         <button
                             type="button"
                             onClick={handleDownloadSchedulePDF}
@@ -560,7 +568,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
                 {hasOverlaps && (
                     <div className="mx-4 mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg flex items-start gap-2 text-orange-800 text-sm shadow-sm animate-in slide-in-from-top-2">
-                        <AlertTriangle className="mt-0.5 shrink-0 text-orange-500" size={18} />
+                        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-orange-500" />
                         <div>
                             <strong className="block">Schedule Overlap Detected</strong>
                             <span className="text-xs opacity-90 block mt-0.5">Multiple subjects are scheduled on the same calendar day.</span>
@@ -577,7 +585,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             if (item.type === 'term_marker') {
                                 return (
                                     <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
-                                        <Flag className="text-blue-400" size={16} /> {item.summary}
+                                        <Flag size={16} className="text-blue-400" /> {item.summary}
                                     </div>
                                 );
                             }
@@ -612,7 +620,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                         <div>
                                             <div className={`font-bold text-sm ${isOverlap ? 'text-orange-800' : 'text-slate-700'} flex items-center gap-2`}>
                                                 {item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-                                                {isOverlap && <AlertTriangle className="text-orange-500" size={14} title="Multiple subjects scheduled on this day" />}
+                                                {isOverlap && <AlertTriangle size={14} className="text-orange-500" title="Multiple subjects scheduled on this day" />}
                                             </div>
                                             {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{item.summary}</div>}
                                         </div>
@@ -634,14 +642,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Inject Manual Makeup Session</label>
                         <div className="flex gap-2">
                             <input type="date" className="flex-1 border border-slate-300 p-2 rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500" value={newAddDate} onChange={e => setNewAddDate(e.target.value)} />
-                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16} /> Add Date</button>
+                            <button type="button" onClick={handleAddManualDate} className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold text-sm flex items-center gap-1 hover:bg-emerald-700"><Plus size={16}/> Add Date</button>
                         </div>
                         {formData.additional_dates.length > 0 && (
                             <div className="mt-3 space-y-1.5 max-h-24 overflow-y-auto custom-scrollbar">
                                 {formData.additional_dates.map(d => (
                                     <div key={d} className="flex justify-between items-center p-2 bg-emerald-50 border border-emerald-100 rounded-lg text-sm text-emerald-800">
                                         <span className="font-bold">{new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                                        <button type="button" onClick={() => removeOverrideDate('add', d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16} /></button>
+                                        <button type="button" onClick={() => removeOverrideDate('add', d)} className="text-emerald-500 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
                                     </div>
                                 ))}
                             </div>
