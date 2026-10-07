@@ -29,7 +29,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   
   const [templates, setTemplates] = useState<Course[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
+  const [rawAcademicYears, setRawAcademicYears] = useState<AcademicYear[]>([]);
   const [generatedEvents, setGeneratedEvents] = useState<any[]>([]);
 
   const [formData, setFormData] = useState({
@@ -39,6 +39,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     start_time: '09:00',
     hours_per_day: 6,
     delivery_mode: 'Blended',
+    state: 'VIC', 
     scheduling_mode: 'consecutive' as 'consecutive' | 'flexible',
     allowed_days: [1, 2, 3, 4, 5],
     subject_rules: {} as Record<string, { start_date: string, allowed_days: number[] }>,
@@ -58,15 +59,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       ]);
       setTemplates(tRes || []);
       setSubjects(sRes || []);
-
-      const rawYears = yRes || [];
-      const selectedState = settingsRes?.state || settingsRes?.default_state;
-      let filteredYears = rawYears;
-      if (selectedState) {
-          const stateMatched = rawYears.filter((y: any) => !y.state || y.state.toUpperCase() === selectedState.toUpperCase());
-          if (stateMatched.length > 0) filteredYears = stateMatched;
-      }
-      setAcademicYears(filteredYears);
+      setRawAcademicYears(yRes || []);
 
       if (initialData) {
         setFormData({
@@ -76,16 +69,29 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           start_time: initialData.start_time || '09:00',
           hours_per_day: initialData.hours_per_day || 6,
           delivery_mode: initialData.delivery_mode || 'Blended',
+          state: (initialData as any).state || settingsRes?.state || 'VIC',
           scheduling_mode: (initialData as any).scheduling_mode || 'consecutive',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
           subject_rules: (initialData as any).subject_rules || {},
           additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : [],
           excluded_dates: Array.isArray(initialData.excluded_dates) ? initialData.excluded_dates : []
         });
+      } else if (settingsRes?.state) {
+          setFormData(prev => ({ ...prev, state: settingsRes.state }));
       }
     };
     fetchDependencies();
   }, [initialData]);
+
+  // NEW ULTRA-FAST FILTER: Only pull rows that match the exact state or are marked National
+  const filteredAcademicYears = useMemo(() => {
+      const selectedState = formData.state.toUpperCase();
+      return rawAcademicYears.filter(y => {
+          if (!y.state) return true; 
+          const s = y.state.toString().trim().toUpperCase();
+          return s === 'NATIONAL' || s === 'ALL' || s === selectedState;
+      });
+  }, [rawAcademicYears, formData.state]);
 
   useEffect(() => {
       if (!formData.template_id || !formData.start_date) {
@@ -98,7 +104,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
           
-          let events = generateAllEventsForInstance(mockInstance, academicYears, selectedTemplate, subjects, [], []);
+          let events = generateAllEventsForInstance(mockInstance, filteredAcademicYears, selectedTemplate, subjects, [], []);
           events = events.sort((a, b) => a.start.getTime() - b.start.getTime());
           
           setGeneratedEvents(events);
@@ -106,7 +112,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       }, 300);
 
       return () => clearTimeout(timer);
-  }, [formData, templates, subjects, academicYears, formData.scheduling_mode, formData.subject_rules, formData.additional_dates, formData.excluded_dates]);
+  }, [formData, templates, subjects, filteredAcademicYears, formData.scheduling_mode, formData.subject_rules, formData.additional_dates, formData.excluded_dates]);
 
   const timeline = useMemo(() => {
       if (generatedEvents.length === 0) return [];
@@ -120,7 +126,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
       const timelineInjections: any[] = [];
       
-      academicYears.forEach((y: any) => {
+      filteredAcademicYears.forEach((y: any) => {
           if (Array.isArray(y.terms)) {
               y.terms.forEach((t: any) => {
                   const tStart = new Date(t.start_date || t.start);
@@ -128,11 +134,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                   tStart.setHours(0,0,0,0);
                   
                   if (tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
-                      timelineInjections.push({
-                          type: 'term_marker',
-                          start: tStart,
-                          summary: t.name || 'Term Start'
-                      });
+                      timelineInjections.push({ type: 'term_marker', start: tStart, summary: t.name || 'Term Start' });
                   }
               });
           }
@@ -144,11 +146,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                   hDate.setHours(12,0,0,0); 
                   
                   if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
-                      timelineInjections.push({
-                          type: 'holiday',
-                          start: hDate,
-                          summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break')
-                      });
+                      timelineInjections.push({ type: 'holiday', start: hDate, summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break') });
                   }
               });
           }
@@ -157,15 +155,10 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       formData.excluded_dates.forEach(dStr => {
           const dDate = new Date(dStr);
           dDate.setHours(12,0,0,0);
-          
           if (dDate.getTime() >= firstDate.getTime() && dDate.getTime() <= lastDate.getTime()) {
               const isDuplicate = timelineInjections.some(kh => getLocalIsoString(kh.start) === getLocalIsoString(dDate));
               if (!isDuplicate) {
-                  timelineInjections.push({
-                      type: 'manual_skip',
-                      start: dDate,
-                      summary: 'Manually Skipped Date'
-                  });
+                  timelineInjections.push({ type: 'manual_skip', start: dDate, summary: 'Manually Skipped Date' });
               }
           }
       });
@@ -177,7 +170,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           }
           return a.start.getTime() - b.start.getTime();
       });
-  }, [generatedEvents, academicYears, formData.start_date, formData.excluded_dates]);
+  }, [generatedEvents, filteredAcademicYears, formData.start_date, formData.excluded_dates]);
 
   const toggleGlobalDay = (dayId: number) => {
     setFormData(prev => ({
@@ -246,6 +239,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             start_time: formData.start_time,
             hours_per_day: formData.hours_per_day,
             delivery_mode: formData.delivery_mode,
+            state: formData.state,
             scheduling_mode: formData.scheduling_mode,
             allowed_days: formData.allowed_days,
             subject_rules: formData.subject_rules,
@@ -311,7 +305,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const overlappingDates = Object.keys(dateCounts).filter(d => dateCounts[d] > 1);
   const hasOverlaps = formData.scheduling_mode === 'flexible' && overlappingDates.length > 0;
 
-  // PRINT / DOWNLOAD PDF HANDLER
   const handleDownloadSchedulePDF = () => {
     if (timeline.length === 0) return alert("Please generate a schedule first.");
 
@@ -323,31 +316,22 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
     const rowsHtml = timeline.map((item) => {
         if (item.type === 'term_marker') {
-            return `
-                <tr class="term-row">
-                    <td colspan="4">🚩 ${item.summary} Begins</td>
-                </tr>
-            `;
+            return `<tr class="term-row"><td colspan="4">🚩 ${item.summary} Begins</td></tr>`;
         }
         if (item.type === 'holiday' || item.type === 'manual_skip') {
-            return `
-                <tr class="holiday-row">
-                    <td>-</td>
-                    <td>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
-                    <td colspan="2">🌴 ${item.summary} (No Class)</td>
-                </tr>
-            `;
+            return `<tr class="holiday-row">
+                        <td style="text-align: center;">-</td>
+                        <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong></td>
+                        <td colspan="2">🌴 ${item.summary} (No Class)</td>
+                    </tr>`;
         }
 
         const cNum = classCounterPrint++;
-        return `
-            <tr>
-                <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
-                <td>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
-                <td>${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</td>
-                <td><strong>${item.summary}</strong></td>
-            </tr>
-        `;
+        return `<tr>
+                    <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
+                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
+                    <td colspan="2"><strong>${item.summary}</strong></td>
+                </tr>`;
     }).join('');
 
     printWin.document.write(`
@@ -366,20 +350,19 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           </style>
         </head>
         <body>
-          <h1>${formData.name || 'Cohort Schedule'}</h1>
+          <h1>${formData.name || 'Cohort Schedule Preview'}</h1>
           <div class="meta">
             <strong>Template:</strong> ${templateName} &bull; 
             <strong>Mode:</strong> ${formData.delivery_mode} &bull; 
-            <strong>Start Date:</strong> ${formData.start_date} &bull; 
-            <strong>Est. Completion:</strong> ${estimatedCompletion || 'N/A'}
+            <strong>State:</strong> ${formData.state} &bull;
+            <strong>Start Date:</strong> ${formData.start_date}
           </div>
           <table>
             <thead>
               <tr>
                 <th style="width: 50px; text-align: center;">#</th>
-                <th style="width: 160px;">Date</th>
-                <th style="width: 140px;">Time / Duration</th>
-                <th>Subject / Cluster</th>
+                <th style="width: 160px;">Date & Time</th>
+                <th colspan="2">Subject / Cluster</th>
               </tr>
             </thead>
             <tbody>
@@ -402,14 +385,13 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Automatically schedules around state term breaks and holidays.</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Select the state to automatically apply the correct term breaks and holidays.</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
         </div>
 
         <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
             
-            {/* LEFT SIDE: Form Inputs */}
             <div className="flex-1 overflow-y-auto p-6 border-r border-slate-100 space-y-8 custom-scrollbar">
                 <form id="schedule-form" onSubmit={handleSubmit} className="space-y-8">
                     
@@ -427,6 +409,22 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Cohort Name</label>
                                 <input required className="w-full border border-slate-300 p-2.5 rounded-lg" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. 256THU7" />
                             </div>
+                            
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1">Cohort State</label>
+                                <select className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" value={formData.state} onChange={e => setFormData({...formData, state: e.target.value})}>
+                                    <option value="VIC">Victoria (VIC)</option>
+                                    <option value="NSW">New South Wales (NSW)</option>
+                                    <option value="QLD">Queensland (QLD)</option>
+                                    <option value="WA">Western Australia (WA)</option>
+                                    <option value="SA">South Australia (SA)</option>
+                                    <option value="TAS">Tasmania (TAS)</option>
+                                    <option value="NT">Northern Territory (NT)</option>
+                                    <option value="ACT">Aust. Capital Territory (ACT)</option>
+                                    <option value="National">National / All</option>
+                                </select>
+                            </div>
+
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Delivery Mode</label>
                                 <select className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" value={formData.delivery_mode} onChange={e => setFormData({...formData, delivery_mode: e.target.value})}>
@@ -437,7 +435,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Base Start Date</label>
                                 <input required type="date" className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" value={formData.start_date} onChange={e => setFormData({...formData, start_date: e.target.value})} />
                             </div>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-2 gap-2 col-span-2">
                                 <div>
                                     <label className="block text-xs font-bold text-slate-500 mb-1">Start Time</label>
                                     <input required type="time" className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" value={formData.start_time} onChange={e => setFormData({...formData, start_time: e.target.value})} />
@@ -543,7 +541,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                 </form>
             </div>
 
-            {/* RIGHT SIDE: Live Schedule & Overrides */}
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
@@ -554,7 +551,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             type="button"
                             onClick={handleDownloadSchedulePDF}
                             className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 border border-slate-200"
-                            title="Download Schedule as PDF"
+                            title="Download Preview as PDF"
                         >
                             <Download size={14} /> PDF
                         </button>
@@ -577,16 +574,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                     ) : (
                         timeline.map((item, idx) => {
                             
-                            // TERM MARKER BANNER
                             if (item.type === 'term_marker') {
                                 return (
                                     <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
-                                        <Flag size={16} className="text-blue-400" /> {item.summary} Begins
+                                        <Flag size={16} className="text-blue-400" /> {item.summary}
                                     </div>
                                 );
                             }
                             
-                            // HOLIDAYS & MANUAL SKIPS
                             if (item.type === 'holiday' || item.type === 'manual_skip') {
                                 return (
                                     <div key={`gap-${idx}`} className="p-2.5 mx-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 flex items-center justify-between gap-3 opacity-80">
@@ -606,7 +601,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                 );
                             }
 
-                            // ACTUAL CLASS ROW
                             const dateStr = item.start.toLocaleDateString('en-CA');
                             const isOverlap = formData.scheduling_mode === 'flexible' && overlappingDates.includes(dateStr);
                             const currentClassNum = classCounter++;
