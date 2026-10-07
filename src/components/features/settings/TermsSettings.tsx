@@ -36,9 +36,21 @@ export const TermsSettings = () => {
       }
       
       if (data) {
-        // Parse safely in case of stringified JSON from older migrations
-        const parsedTerms = typeof data.terms === 'string' ? JSON.parse(data.terms || '[]') : (data.terms || []);
-        const parsedHolidays = typeof data.holidays === 'string' ? JSON.parse(data.holidays || '[]') : (data.holidays || []);
+        let parsedTerms = [];
+        let parsedHolidays = [];
+
+        try {
+            // Aggressively un-stringify until it becomes a real array/object
+            let rawT = data.terms;
+            while (typeof rawT === 'string') rawT = JSON.parse(rawT);
+            parsedTerms = Array.isArray(rawT) ? rawT : [];
+
+            let rawH = data.holidays;
+            while (typeof rawH === 'string') rawH = JSON.parse(rawH);
+            parsedHolidays = Array.isArray(rawH) ? rawH : [];
+        } catch (parseError) {
+            console.error("Critical JSON Parse Error:", parseError);
+        }
         
         setTerms(parsedTerms);
         setHolidays(parsedHolidays);
@@ -108,7 +120,6 @@ export const TermsSettings = () => {
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Academic Year</label>
             <select value={currentYear} onChange={e => setCurrentYear(e.target.value)} className="border border-slate-300 rounded-lg p-2 text-sm font-bold bg-slate-50 min-w-[100px] outline-none focus:border-blue-500">
-              {/* Note the added years here! */}
               {[2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
