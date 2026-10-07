@@ -58,17 +58,17 @@ export const CalendarView = () => {
       let filteredSubjects = subRes || [];
       const rawYears: any[] = yearRes || [];
 
-      // 1. AGGRESSIVELY PARSE THE SPLIT JSON ROWS
+      // AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
       const parsedYears = rawYears.map((y: any) => {
           let parsedTerms = [];
           let parsedHolidays = [];
           try {
               let rawT = y.terms;
-              while (typeof rawT === 'string') rawT = JSON.parse(rawT);
+              while (typeof rawT === 'string') { try { rawT = JSON.parse(rawT); } catch(e) { break; } }
               parsedTerms = Array.isArray(rawT) ? rawT : [];
 
               let rawH = y.holidays;
-              while (typeof rawH === 'string') rawH = JSON.parse(rawH);
+              while (typeof rawH === 'string') { try { rawH = JSON.parse(rawH); } catch(e) { break; } }
               parsedHolidays = Array.isArray(rawH) ? rawH : [];
           } catch (e) {
               console.error("Parse error for year", y.id, e);
@@ -76,7 +76,6 @@ export const CalendarView = () => {
           return { ...y, terms: parsedTerms, holidays: parsedHolidays };
       });
 
-      // 2. IDENTIFY USER PERMISSIONS
       if (user) {
           let myOrgId = null;
           try {
@@ -111,7 +110,6 @@ export const CalendarView = () => {
       setInstances(filteredInstances);
       setTeachers(filteredTeachers);
 
-      // 3. GENERATE EVENTS BY PASSING COHORT-SPECIFIC YEARS TO THE SCHEDULER
       const { generateAllEventsForInstance } = await import('../../../utils/scheduler');
       let allGeneratedEvents: any[] = [];
 
@@ -120,14 +118,14 @@ export const CalendarView = () => {
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
-            // Find this specific cohort's state (fallback to global setting or VIC)
             const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
             
-            // Give the generator ONLY the academic years matching this cohort's state
             const cohortYears = parsedYears.filter(y => {
-                if (!y.state) return true;
-                const s = y.state.toString().trim().toUpperCase();
-                return s === 'NATIONAL' || s === 'ALL' || s === instanceState;
+                const s = (y.state || '').toString().toUpperCase();
+                if (s === 'NATIONAL' || s === 'ALL' || s === instanceState) return true;
+                if (y.id && String(y.id).toUpperCase().includes(`-${instanceState}`)) return true;
+                if (!s && !String(y.id).includes('-')) return true; // global fallback
+                return false;
             });
 
             const instanceEvents = generateAllEventsForInstance(
@@ -179,13 +177,13 @@ export const CalendarView = () => {
       });
       setEvents(Array.from(uniqueEventsMap.values()));
 
-      // 4. BUILD GLOBAL CALENDAR HOLIDAY MAP FOR BACKGROUND GREY OUTS
-      // We base the visual grey boxes on the main organization's state.
       const globalState = (settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
       const globalYears = parsedYears.filter(y => {
-          if (!y.state) return true;
-          const s = y.state.toString().trim().toUpperCase();
-          return s === 'NATIONAL' || s === 'ALL' || s === globalState;
+          const s = (y.state || '').toString().toUpperCase();
+          if (s === 'NATIONAL' || s === 'ALL' || s === globalState) return true;
+          if (y.id && String(y.id).toUpperCase().includes(`-${globalState}`)) return true;
+          if (!s && !String(y.id).includes('-')) return true; // global fallback
+          return false;
       });
 
       const hMap: Record<string, boolean> = {};
