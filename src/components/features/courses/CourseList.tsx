@@ -37,40 +37,22 @@ const applyLocalTimeFix = (events: any[], instance: any) => {
     });
 };
 
-// Reusable State Matcher
-const isStateMatch = (item: any, selectedState: string) => {
-    if (!selectedState || selectedState === 'ALL' || selectedState === 'NATIONAL') return true;
-    if (item && item.state) {
-        const s = item.state.toString().trim().toUpperCase();
-        if (s === 'NATIONAL' || s === 'ALL') return true;
-        return s.includes(selectedState);
-    }
-    const name = (item?.name || (typeof item === 'string' ? item : '')).toUpperCase();
-    const allStates = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'TAS', 'NT', 'ACT'];
-    
-    if (name.includes(`${selectedState} -`) || name.includes(`${selectedState}-`) || name.includes(`(${selectedState})`)) {
-        return true;
-    }
-    const otherStates = allStates.filter(s => s !== selectedState);
-    for (const st of otherStates) {
-        if (name.includes(`${st} -`) || name.includes(`${st}-`) || name.includes(`(${st})`)) {
-            return false;
-        }
-    }
-    return true; 
-};
-
-// Deep Filter Helper
+// AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
 const getFilteredAcademicYears = (rawYears: AcademicYear[], selectedState: string) => {
     const cleanState = (selectedState || 'VIC').toUpperCase();
-    return rawYears
-        .filter(y => isStateMatch(y, cleanState))
-        .map(y => {
-            const yCopy = { ...y };
-            if (Array.isArray(yCopy.terms)) yCopy.terms = yCopy.terms.filter(t => isStateMatch(t, cleanState));
-            if (Array.isArray(yCopy.holidays)) yCopy.holidays = yCopy.holidays.filter(h => isStateMatch(h, cleanState));
-            return yCopy;
-        });
+    return rawYears.map(y => {
+        let t = (y as any).terms;
+        while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
+        let h = (y as any).holidays;
+        while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
+        return { ...y, terms: Array.isArray(t) ? t : [], holidays: Array.isArray(h) ? h : [] } as AcademicYear;
+    }).filter(y => {
+        const s = ((y as any).state || '').toString().toUpperCase();
+        if (s === 'NATIONAL' || s === 'ALL' || s === cleanState) return true;
+        if (y.id && String(y.id).toUpperCase().includes(`-${cleanState}`)) return true;
+        if (!s && !String(y.id).includes('-')) return true; // global fallback
+        return false;
+    });
 };
 
 export const CourseList = () => {
@@ -180,87 +162,6 @@ export const CourseList = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const runStateMigration = async () => {
-      if (!confirm("This will scan ALL academic years and split their JSON into separate states. Ready?")) return;
-      setProcessing(true);
-
-      try {
-          // 1. Fetch ALL academic year rows
-          const { data: allYears, error } = await supabase
-              .from('academic_years')
-              .select('*');
-
-          if (error || !allYears) throw new Error("Could not fetch academic years.");
-
-          const states = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'ACT', 'TAS', 'NT'];
-          let migratedCount = 0;
-
-          // 2. Loop through every year found in the database
-          for (const yearData of allYears) {
-              // Skip rows that are already migrated (they will have a state assigned or a hyphen in the ID like '2026-VIC')
-              if (yearData.state || yearData.id.includes('-')) continue;
-
-              const rawTerms = typeof yearData.terms === 'string' ? JSON.parse(yearData.terms || '[]') : (yearData.terms || []);
-              const rawHolidays = typeof yearData.holidays === 'string' ? JSON.parse(yearData.holidays || '[]') : (yearData.holidays || []);
-
-              for (const state of states) {
-                  // Extract Terms for this state
-                  const stateTerms = rawTerms
-                      .filter((t: any) => t.name.toUpperCase().includes(state))
-                      .map((t: any) => ({
-                          ...t,
-                          name: t.name.replace(new RegExp(`^${state}\\s*-\\s*`, 'i'), '').trim()
-                      }));
-
-                  // Extract Holidays for this state
-                  const stateHolidays = rawHolidays.filter((h: any) => {
-                      const hName = (h.name || '').toUpperCase();
-                      const hasBrackets = hName.includes('(');
-
-                      if (!hasBrackets) return true; 
-                      if (hName.includes(`(${state})`)) return true; 
-                      if (hName.includes('NATIONAL EX')) {
-                          if (state === 'WA' && hName.includes('WA')) return false;
-                          if (state === 'QLD' && hName.includes('QLD')) return false;
-                          return true;
-                      }
-                      return false;
-                  });
-
-                  // If this state has any terms or holidays for this year, save it
-                  if (stateTerms.length > 0 || stateHolidays.length > 0) {
-                      const newRow = {
-                          id: `${yearData.id}-${state}`,
-                          user_id: yearData.user_id,
-                          state: state,
-                          terms: JSON.stringify(stateTerms),
-                          holidays: JSON.stringify(stateHolidays)
-                      };
-                      await supabase.from('academic_years').insert([newRow]);
-                  }
-              }
-
-              // 3. Delete the old combined row for this year
-              await supabase.from('academic_years').delete().eq('id', yearData.id);
-              migratedCount++;
-          }
-
-          if (migratedCount === 0) {
-              alert("All years are already cleanly separated by state!");
-          } else {
-              alert(`Migration complete! Successfully split ${migratedCount} academic year(s).`);
-          }
-          
-          await loadData();
-          
-      } catch (error: any) {
-          console.error("Migration failed:", error);
-          alert(error.message);
-      } finally {
-          setProcessing(false);
-      }
   };
 
   const handleDelete = async (table: string, id: string) => {
@@ -706,9 +607,6 @@ export const CourseList = () => {
         </div>
         
         <div className="flex gap-3">
-            <button onClick={runStateMigration} disabled={processing} className="bg-orange-500 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-600 shadow-sm transition-all">
-                {processing ? <Loader2 className="animate-spin" size={18} /> : <AlertTriangle size={18} />} Split JSON
-            </button>
             <button onClick={handleAutoArchive} disabled={archiving} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-900 shadow-sm transition-all">
                 {archiving ? <Loader2 className="animate-spin" size={18} /> : <Archive size={18} />} Auto Archive
             </button>
