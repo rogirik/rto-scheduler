@@ -37,21 +37,49 @@ const applyLocalTimeFix = (events: any[], instance: any) => {
     });
 };
 
-// AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
-const getFilteredAcademicYears = (rawYears: AcademicYear[], selectedState: string) => {
+// THE FIX: Forces the ID back to a Number so the scheduler's math works flawlessly
+const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: string) => {
     const cleanState = (selectedState || 'VIC').toUpperCase();
+    
     return rawYears.map(y => {
         let t = (y as any).terms;
         while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
         let h = (y as any).holidays;
         while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
-        return { ...y, terms: Array.isArray(t) ? t : [], holidays: Array.isArray(h) ? h : [] } as AcademicYear;
+        
+        return { 
+            ...y, 
+            terms: Array.isArray(t) ? t : [], 
+            holidays: Array.isArray(h) ? h : [] 
+        } as AcademicYear;
     }).filter(y => {
         const s = ((y as any).state || '').toString().toUpperCase();
         if (s === 'NATIONAL' || s === 'ALL' || s === cleanState) return true;
         if (y.id && String(y.id).toUpperCase().includes(`-${cleanState}`)) return true;
-        if (!s && !String(y.id).includes('-')) return true; // global fallback
+        if (!s && !String(y.id).includes('-')) return true; 
         return false;
+    }).map(y => {
+        const terms = y.terms.map((term: any) => ({
+            ...term,
+            start_date: term.start_date || term.start,
+            end_date: term.end_date || term.end,
+            start: term.start || term.start_date,
+            end: term.end || term.end_date,
+            state: cleanState
+        }));
+
+        const holidays = y.holidays.map((hol: any) => ({
+            ...hol,
+            date: hol.date || hol.start || hol.start_date,
+            state: cleanState
+        }));
+
+        return {
+            ...y,
+            terms,
+            holidays,
+            id: parseInt(String(y.id).split('-')[0], 10) // <-- Forces it to be an Integer
+        } as AcademicYear;
     });
 };
 
@@ -80,7 +108,9 @@ export const CourseList = () => {
   const [selectedInstance, setSelectedInstance] = useState<CourseInstance | null>(null);
   const [showAllocator, setShowAllocator] = useState<CourseInstance | null>(null);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { 
+      loadData(); 
+  }, []);
 
   const loadData = async () => {
     try {
@@ -166,7 +196,12 @@ export const CourseList = () => {
 
   const handleDelete = async (table: string, id: string) => {
     if (!confirm('Permanently delete this record?')) return;
-    try { await ApiService.delete(table as any, id); loadData(); } catch (e) { alert("Delete failed."); }
+    try { 
+        await ApiService.delete(table as any, id); 
+        loadData(); 
+    } catch (e) { 
+        alert("Delete failed."); 
+    }
   };
 
   const handleToggleArchive = async (id: string, currentStatus: string) => {
@@ -194,8 +229,16 @@ export const CourseList = () => {
               const template = templates.find(t => t.id === instance.template_id);
               if (!template) return;
 
-              const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
-              let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
+              const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (instance as any).state);
+              
+              let events = generateAllEventsForInstance(
+                  instance as any, 
+                  instanceAcademicYears, 
+                  template, 
+                  subjects, 
+                  teachers, 
+                  scheduleOverrides
+              );
               
               if (events.length > 0) {
                   events.sort((a,b) => a.start.getTime() - b.start.getTime());
@@ -231,16 +274,17 @@ export const CourseList = () => {
   const handleGlobalAutoAssign = async () => {
     if (!confirm("Auto-assign trainers to EMPTY units across all active cohorts?")) return;
     setProcessing(true);
+    
     try {
         let localAllocations = [...allocations];
-        
         const allGlobalEvents: any[] = [];
+        
         instances.forEach(inst => {
             if (inst.status === 'archived' || inst.status === 'completed') return;
             const temp = templates.find(t => t.id === inst.template_id);
             if (!temp) return;
             
-            const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (inst as any).state);
+            const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (inst as any).state);
             let evs = generateAllEventsForInstance(inst as any, instanceAcademicYears, temp, subjects, teachers, scheduleOverrides);
             evs = applyLocalTimeFix(evs, inst);
 
@@ -268,12 +312,14 @@ export const CourseList = () => {
 
         for (const instance of instances) {
             if (instance.status === 'archived' || instance.status === 'completed') continue;
+            
             const template = templates.find(t => t.id === instance.template_id);
             if (!template) continue;
             
             const rawSeq = (template as any).sequenced_subjects || [];
             const requiredIds = rawSeq.map((item: any) => typeof item === 'string' ? item : item.id).filter(Boolean);
             const missingIds = requiredIds.filter(id => !localAllocations.find(a => a.instance_id === instance.id && a.subject_id === id));
+            
             if (missingIds.length === 0) continue;
 
             for (const subId of missingIds) {
@@ -282,6 +328,7 @@ export const CourseList = () => {
                 
                 const proposedEvents = allGlobalEvents.filter(e => e.instanceId === instance.id && e.subjectId === subId);
                 const requiredDays = new Set<number>();
+                
                 proposedEvents.forEach(ev => {
                     requiredDays.add(ev.start.getDay()); 
                 });
@@ -344,14 +391,18 @@ export const CourseList = () => {
         }
         await loadData();
         alert("Global allocation finished with clash detection applied.");
-    } catch (e) { console.error(e); } finally { setProcessing(false); }
+    } catch (e) { 
+        console.error(e); 
+    } finally { 
+        setProcessing(false); 
+    }
   };
 
   const handleDownloadPDF = async (instance: CourseInstance) => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
       
-      const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
+      const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (instance as any).state);
 
       let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
       events = applyLocalTimeFix(events, instance);
@@ -372,27 +423,19 @@ export const CourseList = () => {
       const timelineInjections: any[] = [];
       
       instanceAcademicYears.forEach((y: any) => {
-          if (Array.isArray(y.terms)) {
-              y.terms.forEach((t: any) => {
-                  const tStart = new Date(t.start_date || t.start);
-                  if (isNaN(tStart.getTime())) return;
-                  tStart.setHours(0,0,0,0);
-                  if (tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
-                      timelineInjections.push({ type: 'term_marker', start: tStart, summary: t.name || 'Term Start' });
-                  }
-              });
-          }
+          y.terms.forEach((t: any) => {
+              const tStart = new Date(t.start_date || t.start);
+              if (!isNaN(tStart.getTime()) && tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
+                  timelineInjections.push({ type: 'term_marker', start: tStart, summary: t.name || 'Term Start' });
+              }
+          });
 
-          if (Array.isArray(y.holidays)) {
-              y.holidays.forEach((h: any) => {
-                  const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
-                  if (isNaN(hDate.getTime())) return;
-                  hDate.setHours(12,0,0,0);
-                  if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
-                      timelineInjections.push({ type: 'holiday', start: hDate, summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break') });
-                  }
-              });
-          }
+          y.holidays.forEach((h: any) => {
+              const hDate = new Date(h.date || h.start || h.start_date);
+              if (!isNaN(hDate.getTime()) && hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
+                  timelineInjections.push({ type: 'holiday', start: hDate, summary: h.name || 'Holiday / Break' });
+              }
+          });
       });
 
       const exDates = Array.isArray((instance as any).excluded_dates) ? (instance as any).excluded_dates : [];
@@ -563,8 +606,15 @@ export const CourseList = () => {
     let hasClash = false;
     let endDateStr = '';
     
-    const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
-    let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
+    const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (instance as any).state);
+    let events = generateAllEventsForInstance(
+        instance as any, 
+        instanceAcademicYears, 
+        template, 
+        subjects, 
+        teachers, 
+        scheduleOverrides
+    );
     
     if (events.length > 0) {
         events.sort((a,b) => a.start.getTime() - b.start.getTime());
