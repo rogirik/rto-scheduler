@@ -12,7 +12,6 @@ export const TermsSettings = () => {
   const [terms, setTerms] = useState<TermItem[]>([]);
   const [holidays, setHolidays] = useState<HolidayItem[]>([]);
 
-  // Reload data whenever the year OR the state changes
   useEffect(() => {
     loadYearData();
   }, [currentYear, selectedState]);
@@ -20,12 +19,10 @@ export const TermsSettings = () => {
   const loadYearData = async () => {
     setLoading(true);
     try {
-      // 1. We construct the exact new ID (e.g. "2026-VIC")
       const targetId = `${currentYear}-${selectedState}`;
-      console.log(`Loading Record: ${targetId}`);
 
-      // 2. Fetch precisely this state's row from the database
-      const { data, error } = await supabase
+      // 1. Fetch precisely this state's row from the database
+      let { data, error } = await supabase
         .from('academic_years')
         .select('*')
         .eq('id', targetId)
@@ -34,28 +31,79 @@ export const TermsSettings = () => {
       if (error && error.code !== 'PGRST116') {
         console.error("Supabase Error:", error);
       }
+
+      // 2. AUTO-MIGRATOR: If the state row is missing, check for a legacy global row
+      if (!data) {
+          const { data: legacyData } = await supabase
+              .from('academic_years')
+              .select('*')
+              .eq('id', currentYear)
+              .single();
+
+          if (legacyData) {
+              let fTerms = legacyData.terms;
+              while (typeof fTerms === 'string') { try { fTerms = JSON.parse(fTerms); } catch(e) { break; } }
+              let fHolidays = legacyData.holidays;
+              while (typeof fHolidays === 'string') { try { fHolidays = JSON.parse(fHolidays); } catch(e) { break; } }
+              
+              fTerms = Array.isArray(fTerms) ? fTerms : [];
+              fHolidays = Array.isArray(fHolidays) ? fHolidays : [];
+
+              // Extract state-specific terms and strip the old prefix
+              const stateTerms = fTerms.filter((t: any) => (t.name || '').toUpperCase().includes(selectedState));
+              const cleanTerms = stateTerms.map((t: any) => ({
+                  name: t.name.replace(new RegExp(`^${selectedState}\\s*-\\s*`, 'i'), '').trim(),
+                  start: t.start || t.start_date || '',
+                  end: t.end || t.end_date || ''
+              }));
+
+              // Extract state-specific holidays
+              const otherStates = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'TAS', 'NT', 'ACT'].filter(s => s !== selectedState);
+              const stateHolidays = fHolidays.filter((h: any) => {
+                  const hName = h.name || '';
+                  if (!hName.includes('(')) return true;
+                  if (hName.includes(`(${selectedState})`)) return true;
+                  if (otherStates.some(s => hName.includes(`(${s})`))) return false;
+                  return true;
+              }).map((h: any) => ({
+                  name: h.name || '',
+                  date: h.date || h.start || h.start_date || ''
+              }));
+
+              data = { terms: cleanTerms, holidays: stateHolidays };
+          }
+      }
       
       if (data) {
         let parsedTerms = [];
         let parsedHolidays = [];
 
         try {
-            // Aggressively un-stringify until it becomes a real array/object
             let rawT = data.terms;
-            while (typeof rawT === 'string') rawT = JSON.parse(rawT);
+            while (typeof rawT === 'string') { try { rawT = JSON.parse(rawT); } catch(e) { break; } }
             parsedTerms = Array.isArray(rawT) ? rawT : [];
 
             let rawH = data.holidays;
-            while (typeof rawH === 'string') rawH = JSON.parse(rawH);
+            while (typeof rawH === 'string') { try { rawH = JSON.parse(rawH); } catch(e) { break; } }
             parsedHolidays = Array.isArray(rawH) ? rawH : [];
         } catch (parseError) {
             console.error("Critical JSON Parse Error:", parseError);
         }
         
-        setTerms(parsedTerms);
-        setHolidays(parsedHolidays);
+        // Ensure legacy start_date maps safely to the new input fields
+        const safeTerms = parsedTerms.map((t: any) => ({
+            name: t.name || '',
+            start: t.start || t.start_date || '',
+            end: t.end || t.end_date || ''
+        }));
+        const safeHolidays = parsedHolidays.map((h: any) => ({
+            name: h.name || '',
+            date: h.date || h.start || h.start_date || ''
+        }));
+
+        setTerms(safeTerms);
+        setHolidays(safeHolidays);
       } else {
-        // If the row doesn't exist yet, clear the screen
         setTerms([]);
         setHolidays([]);
       }
@@ -76,11 +124,11 @@ export const TermsSettings = () => {
         id: targetId,
         user_id: user?.id,
         state: selectedState,
-        terms: terms,
-        holidays: holidays
+        // Double-save the keys so BOTH the UI and the background scheduler can read them perfectly
+        terms: terms.map(t => ({ name: t.name, start_date: t.start, end_date: t.end, start: t.start, end: t.end })),
+        holidays: holidays.map(h => ({ name: h.name, date: h.date, start_date: h.date, start: h.date }))
       };
 
-      // Upsert: Updates if exists, inserts if brand new
       const { error } = await supabase
         .from('academic_years')
         .upsert([payload]);
@@ -95,7 +143,6 @@ export const TermsSettings = () => {
     }
   };
 
-  // --- ARRAY MANAGERS ---
   const addTerm = () => setTerms([...terms, { name: '', start: '', end: '' }]);
   const removeTerm = (index: number) => setTerms(terms.filter((_, i) => i !== index));
   const updateTerm = (index: number, field: keyof TermItem, value: string) => {
@@ -114,7 +161,6 @@ export const TermsSettings = () => {
 
   return (
     <div className="space-y-6">
-      {/* HEADER */}
       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-6 items-center justify-between">
         <div className="flex gap-6">
           <div>
@@ -144,13 +190,11 @@ export const TermsSettings = () => {
         </button>
       </div>
 
-      {/* CONTENT */}
       {loading ? (
         <div className="text-center py-12 text-slate-400"><Loader2 className="animate-spin inline mr-2"/> Loading...</div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           
-          {/* TERMS */}
           <div className="space-y-4">
             <div className="flex justify-between items-center">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Calendar className="text-blue-600" size={20} /> {selectedState} School Terms</h3>
@@ -192,7 +236,6 @@ export const TermsSettings = () => {
             </div>
           </div>
 
-          {/* HOLIDAYS */}
           <div className="space-y-4">
             <div className="flex justify-between items-center">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Coffee className="text-orange-500" size={20} /> {selectedState} Public Holidays</h3>
