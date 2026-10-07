@@ -91,7 +91,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
           let h = (y as any).holidays;
           while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
-          return { ...y, terms: Array.isArray(t) ? t : [], holidays: Array.isArray(h) ? h : [] };
+          return { ...y, terms: Array.isArray(t) ? t : [], holidays: Array.isArray(h) ? h : [] } as AcademicYear;
       }).filter(y => {
           const s = ((y as any).state || '').toString().toUpperCase();
           if (s === 'NATIONAL' || s === 'ALL' || s === selectedState) return true;
@@ -337,7 +337,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         const cNum = classCounterPrint++;
         return `<tr>
                     <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
-                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time \vert{}\vert{} '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
+                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
                     <td colspan="2"><strong>${item.summary}</strong></td>
                 </tr>`;
     }).join('');
