@@ -13,6 +13,46 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
+// THE FIX: Forces the ID back to a Number so the scheduler's math works flawlessly
+const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => {
+    const cleanState = (targetState || 'VIC').toUpperCase();
+    
+    return rawYears.filter(y => {
+        const s = (y.state || '').toString().toUpperCase();
+        if (s === 'NATIONAL' || s === 'ALL' || s === cleanState) return true;
+        if (y.id && String(y.id).toUpperCase().includes(`-${cleanState}`)) return true;
+        if (!s && !String(y.id).includes('-')) return true;
+        return false;
+    }).map(y => {
+        let t = y.terms;
+        while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
+        let h = y.holidays;
+        while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
+        
+        const terms = (Array.isArray(t) ? t : []).map((term: any) => ({
+            ...term,
+            start_date: term.start_date || term.start,
+            end_date: term.end_date || term.end,
+            start: term.start || term.start_date,
+            end: term.end || term.end_date,
+            state: cleanState
+        }));
+
+        const holidays = (Array.isArray(h) ? h : []).map((hol: any) => ({
+            ...hol,
+            date: hol.date || hol.start || hol.start_date,
+            state: cleanState
+        }));
+
+        return { 
+            ...y, 
+            terms, 
+            holidays, 
+            id: parseInt(String(y.id).split('-')[0], 10) // <-- Forces it to be an Integer
+        };
+    });
+};
+
 export const CalendarView = () => {
   const [loading, setLoading] = useState(true);
   
@@ -31,8 +71,8 @@ export const CalendarView = () => {
   const [filterType, setFilterType] = useState<'all' | 'cohort' | 'teacher'>('all');
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
 
-  useEffect(() => {
-    loadCalendarData();
+  useEffect(() => { 
+      loadCalendarData(); 
   }, []);
 
   const loadCalendarData = async () => {
@@ -51,63 +91,46 @@ export const CalendarView = () => {
         ApiService.getSettings().catch(() => null)
       ]);
 
-      let filteredInstances = iRes || [];
-      let filteredTemplates = tRes || [];
+      let filteredInstances = iRes || []; 
+      let filteredTemplates = tRes || []; 
       let filteredAllocations = aRes || [];
-      let filteredTeachers = teachRes.data || [];
-      let filteredSubjects = subRes || [];
+      let filteredTeachers = teachRes.data || []; 
+      let filteredSubjects = subRes || []; 
       const rawYears: any[] = yearRes || [];
-
-      // AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
-      const parsedYears = rawYears.map((y: any) => {
-          let parsedTerms = [];
-          let parsedHolidays = [];
-          try {
-              let rawT = y.terms;
-              while (typeof rawT === 'string') { try { rawT = JSON.parse(rawT); } catch(e) { break; } }
-              parsedTerms = Array.isArray(rawT) ? rawT : [];
-
-              let rawH = y.holidays;
-              while (typeof rawH === 'string') { try { rawH = JSON.parse(rawH); } catch(e) { break; } }
-              parsedHolidays = Array.isArray(rawH) ? rawH : [];
-          } catch (e) {
-              console.error("Parse error for year", y.id, e);
-          }
-          return { ...y, terms: parsedTerms, holidays: parsedHolidays };
-      });
 
       if (user) {
           let myOrgId = null;
-          try {
-              const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', user.id).single();
-              if (profile) myOrgId = profile.organization_id;
+          
+          try { 
+              const { data: profile } = await supabase.from('user_profiles').select('organization_id').eq('id', user.id).single(); 
+              if (profile) myOrgId = profile.organization_id; 
           } catch(e) {}
-
-          if (!myOrgId) {
-              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id);
-              myOrgId = myKnownTeacher?.organization_id;
+          
+          if (!myOrgId) { 
+              const myKnownTeacher = filteredTeachers.find(t => t.user_id === user.id && t.organization_id); 
+              myOrgId = myKnownTeacher?.organization_id; 
           }
-
-          const isMine = (item: any) => {
-              if (myOrgId && item.organization_id) return item.organization_id === myOrgId;
-              return item.user_id === user.id;
+          
+          const isMine = (item: any) => { 
+              if (myOrgId && item.organization_id) return item.organization_id === myOrgId; 
+              return item.user_id === user.id; 
           };
-
-          const isMineOrGlobal = (item: any) => {
+          
+          const isMineOrGlobal = (item: any) => { 
               if (!item.organization_id) return true; 
-              if (myOrgId) return item.organization_id === myOrgId;
-              return item.user_id === user.id;
+              if (myOrgId) return item.organization_id === myOrgId; 
+              return item.user_id === user.id; 
           };
 
-          filteredInstances = filteredInstances.filter(isMine);
-          filteredTeachers = filteredTeachers.filter(isMine);
+          filteredInstances = filteredInstances.filter(isMine); 
+          filteredTeachers = filteredTeachers.filter(isMine); 
           filteredTemplates = filteredTemplates.filter(isMineOrGlobal);
           
           const validInstanceIds = new Set(filteredInstances.map(i => i.id));
           filteredAllocations = filteredAllocations.filter(a => validInstanceIds.has(a.instance_id));
       }
 
-      setInstances(filteredInstances);
+      setInstances(filteredInstances); 
       setTeachers(filteredTeachers);
 
       const { generateAllEventsForInstance } = await import('../../../utils/scheduler');
@@ -115,55 +138,49 @@ export const CalendarView = () => {
 
       filteredInstances.forEach((instance: any) => {
         if (instance.status === 'completed' || instance.status === 'archived') return; 
+        
         const template = filteredTemplates.find((t: any) => t.id === instance.template_id);
         
         if (template) {
             const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
-            
-            const cohortYears = parsedYears.filter(y => {
-                const s = (y.state || '').toString().toUpperCase();
-                if (s === 'NATIONAL' || s === 'ALL' || s === instanceState) return true;
-                if (y.id && String(y.id).toUpperCase().includes(`-${instanceState}`)) return true;
-                if (!s && !String(y.id).includes('-')) return true; // global fallback
-                return false;
-            });
+            const cohortYears = getFilteredAndNormalizedYears(rawYears, instanceState);
 
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
                 cohortYears, 
                 template as any, 
                 filteredSubjects as any[], 
-                filteredTeachers,
-                overridesRes.data || [] 
+                filteredTeachers, 
+                overridesRes.data || []
             );
 
             const hydratedEvents = instanceEvents.map((ev: any) => {
                 const allocation = filteredAllocations.find((a: any) => a.instance_id === ev.instanceId && a.subject_id === ev.subjectId);
                 const teacher = filteredTeachers.find((t: any) => t.id === allocation?.teacher_id);
                 
-                const originalDate = new Date(ev.start);
-                const year = originalDate.getFullYear();
-                const month = originalDate.getMonth();
+                const originalDate = new Date(ev.start); 
+                const year = originalDate.getFullYear(); 
+                const month = originalDate.getMonth(); 
                 const day = originalDate.getDate();
-
+                
                 const [startH, startM] = (instance.start_time || "09:00").split(':').map(Number);
                 const fixedStart = new Date(year, month, day, startH, startM);
-
+                
                 const duration = instance.hours_per_day || 7;
-                const fixedEnd = new Date(fixedStart);
-                fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration));
+                const fixedEnd = new Date(fixedStart); 
+                fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration)); 
                 fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
 
                 return {
-                    ...ev,
-                    start: fixedStart,
-                    end: fixedEnd,
-                    teacherId: teacher?.id,
+                    ...ev, 
+                    start: fixedStart, 
+                    end: fixedEnd, 
+                    teacherId: teacher?.id, 
                     teacherName: teacher?.name || 'Unassigned',
-                    teacherColor: teacher?.color || '#94a3b8',
-                    teacherEmail: teacher?.email,
+                    teacherColor: teacher?.color || '#94a3b8', 
+                    teacherEmail: teacher?.email, 
                     location: instance.delivery_mode === 'Online' ? 'Online' : 'On Campus',
-                    isUnassigned: !teacher,
+                    isUnassigned: !teacher, 
                     uniqueKey: `${instance.id}|${getLocalIsoString(fixedStart)}|${teacher?.id || 'unassigned'}|${ev.summary}` 
                 };
             });
@@ -172,83 +189,76 @@ export const CalendarView = () => {
       });
 
       const uniqueEventsMap = new Map();
-      allGeneratedEvents.forEach(ev => {
-          if (!uniqueEventsMap.has(ev.uniqueKey)) uniqueEventsMap.set(ev.uniqueKey, ev);
+      allGeneratedEvents.forEach(ev => { 
+          if (!uniqueEventsMap.has(ev.uniqueKey)) uniqueEventsMap.set(ev.uniqueKey, ev); 
       });
       setEvents(Array.from(uniqueEventsMap.values()));
 
       const globalState = (settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
-      const globalYears = parsedYears.filter(y => {
-          const s = (y.state || '').toString().toUpperCase();
-          if (s === 'NATIONAL' || s === 'ALL' || s === globalState) return true;
-          if (y.id && String(y.id).toUpperCase().includes(`-${globalState}`)) return true;
-          if (!s && !String(y.id).includes('-')) return true; // global fallback
-          return false;
-      });
+      const globalYears = getFilteredAndNormalizedYears(rawYears, globalState);
 
       const hMap: Record<string, boolean> = {};
       globalYears.forEach((y: any) => {
           y.holidays.forEach((h: any) => {
-              const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
-              if (!isNaN(hDate.getTime())) {
-                  hMap[getLocalIsoString(hDate)] = true;
+              const hDate = new Date(h.date);
+              if (!isNaN(hDate.getTime())) { 
+                  hMap[getLocalIsoString(hDate)] = true; 
               }
           });
       });
       
-      setHolidayMap(hMap);
+      setHolidayMap(hMap); 
       setAcademicYears(globalYears);
-
-    } catch (error) {
-      console.error("Calendar Load Failed", error);
-    } finally {
-      setLoading(false);
+      
+    } catch (error) { 
+        console.error("Calendar Load Failed", error); 
+    } finally { 
+        setLoading(false); 
     }
   };
 
-  const handleFilterChange = (val: string) => {
-      setSelectedFilter(val);
-      if (val === 'all') {
-          setFilterType('all');
-      } else {
-          const isTeacher = teachers.some(t => t.id === val);
-          setFilterType(isTeacher ? 'teacher' : 'cohort');
-      }
+  const handleFilterChange = (val: string) => { 
+      setSelectedFilter(val); 
+      if (val === 'all') { 
+          setFilterType('all'); 
+      } else { 
+          const isTeacher = teachers.some(t => t.id === val); 
+          setFilterType(isTeacher ? 'teacher' : 'cohort'); 
+      } 
   };
 
   const filteredEvents = selectedFilter === 'all' 
-    ? events 
-    : filterType === 'teacher'
-        ? events.filter(e => e.teacherId === selectedFilter)
-        : events.filter(e => e.instanceId === selectedFilter);
+      ? events 
+      : filterType === 'teacher' 
+          ? events.filter(e => e.teacherId === selectedFilter) 
+          : events.filter(e => e.instanceId === selectedFilter);
 
   const getMergedEvents = (rawEvents: any[]) => {
     if (rawEvents.length === 0) return [];
     const sorted = [...rawEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
-    const merged: any[] = [];
+    const merged: any[] = []; 
     let currentGroup: any = null;
 
     sorted.forEach((ev) => {
         const evKey = `${ev.summary}|${ev.teacherName}`;
-
-        if (!currentGroup) {
-            currentGroup = { ...ev, endDate: ev.start, key: evKey };
+        
+        if (!currentGroup) { 
+            currentGroup = { ...ev, endDate: ev.start, key: evKey }; 
         } else {
-            const prevDate = new Date(currentGroup.endDate);
+            const prevDate = new Date(currentGroup.endDate); 
             prevDate.setDate(prevDate.getDate() + 1); 
             
             const isNextDay = getLocalIsoString(ev.start) === getLocalIsoString(prevDate);
             const isMondayAfterFriday = (currentGroup.endDate.getDay() === 5 && ev.start.getDay() === 1 && (ev.start.getTime() - currentGroup.endDate.getTime()) < 345600000); 
-
-            if (evKey === currentGroup.key && (isNextDay || isMondayAfterFriday)) {
+            
+            if (evKey === currentGroup.key && (isNextDay || isMondayAfterFriday)) { 
                 currentGroup.endDate = ev.start; 
-            } else {
-                merged.push(currentGroup);
-                currentGroup = { ...ev, endDate: ev.start, key: evKey };
+            } else { 
+                merged.push(currentGroup); 
+                currentGroup = { ...ev, endDate: ev.start, key: evKey }; 
             }
         }
     });
-
     if (currentGroup) merged.push(currentGroup);
     return merged;
   };
@@ -256,12 +266,10 @@ export const CalendarView = () => {
   const getTermForDate = (date: Date) => {
       const time = date.getTime();
       for (const y of academicYears) {
-          if (Array.isArray(y.terms)) {
-              for (const t of y.terms) {
-                  const tStart = new Date(t.start_date || t.start).setHours(0,0,0,0);
-                  const tEnd = new Date(t.end_date || t.end).setHours(23,59,59,999);
-                  if (time >= tStart && time <= tEnd) return t.name;
-              }
+          for (const t of y.terms) {
+              const tStart = new Date(t.start_date || t.start).setHours(0,0,0,0);
+              const tEnd = new Date(t.end_date || t.end).setHours(23,59,59,999);
+              if (time >= tStart && time <= tEnd) return t.name;
           }
       }
       return "Out of Term / Break";
@@ -269,49 +277,48 @@ export const CalendarView = () => {
 
   const handleExportCSV = () => {
     if (filteredEvents.length === 0) return alert("No events to export.");
-
     const mergedList = getMergedEvents(filteredEvents);
     const headers = ["Date Range", "Start Time", "End Time", "Subject", "Teacher", "Cohort", "Term"];
     
     const rows = mergedList.map(ev => {
-        const dateStr = getLocalIsoString(ev.start) === getLocalIsoString(ev.endDate)
-            ? ev.start.toLocaleDateString('en-GB')
+        const dateStr = getLocalIsoString(ev.start) === getLocalIsoString(ev.endDate) 
+            ? ev.start.toLocaleDateString('en-GB') 
             : `${ev.start.toLocaleDateString('en-GB')} - ${ev.endDate.toLocaleDateString('en-GB')}`;
-
+            
         return [
-            `"${dateStr}"`,
-            ev.start.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }),
-            ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }),
-            `"${ev.summary}"`,
-            `"${ev.teacherName}"`,
-            `"${ev.courseName}"`,
+            `"${dateStr}"`, 
+            ev.start.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }), 
+            ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }), 
+            `"${ev.summary}"`, 
+            `"${ev.teacherName}"`, 
+            `"${ev.courseName}"`, 
             `"${getTermForDate(ev.start)}"`
         ].join(",");
     });
-
+    
     const blob = new Blob([headers.join(",") + '\n' + rows.join("\n")], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Schedule_Export.csv`;
+    const link = document.createElement("a"); 
+    link.href = URL.createObjectURL(blob); 
+    link.download = `Schedule_Export.csv`; 
     link.click();
   };
 
-  const handleSmartPrint = () => {
-      if (filterType === 'teacher') {
-          printTeacherGrid();
-      } else {
-          alert("Please select a Teacher from the dropdown to print their monthly schedule.");
-      }
+  const handleSmartPrint = () => { 
+      if (filterType === 'teacher') { 
+          printTeacherGrid(); 
+      } else { 
+          alert("Please select a Teacher from the dropdown to print their monthly schedule."); 
+      } 
   };
 
   const printTeacherGrid = () => {
     const teacherName = teachers.find(t => t.id === selectedFilter)?.name || "Teacher Schedule";
     const printWindow = window.open('', '', 'height=600,width=800');
     if (!printWindow) return;
-
-    const pYear = currentDate.getFullYear();
-    const pMonth = currentDate.getMonth();
-    const pFirstDay = new Date(pYear, pMonth, 1).getDay();
+    
+    const pYear = currentDate.getFullYear(); 
+    const pMonth = currentDate.getMonth(); 
+    const pFirstDay = new Date(pYear, pMonth, 1).getDay(); 
     const adjustedFirstDay = pFirstDay === 0 ? 6 : pFirstDay - 1; 
     const pDaysInMonth = new Date(pYear, pMonth + 1, 0).getDate();
     
@@ -321,70 +328,69 @@ export const CalendarView = () => {
         const dayNum = i - adjustedFirstDay + 1;
         
         if (dayNum > 0 && dayNum <= pDaysInMonth) {
-             const cellDate = new Date(pYear, pMonth, dayNum);
+             const cellDate = new Date(pYear, pMonth, dayNum); 
              const dateKey = getLocalIsoString(cellDate);
              
              const dayEvents = filteredEvents.filter(e => getLocalIsoString(e.start) === dateKey);
              const isNonWorkingDay = isSchoolHoliday(cellDate) || !!holidayMap[dateKey];
-             
              const uniqueSummaries = Array.from(new Set(dayEvents.map(e => e.summary)));
+             
              const eventsHtml = uniqueSummaries.map(summary => {
                  const ev = dayEvents.find(e => e.summary === summary);
                  return `<div class="event"><div class="subject">• ${summary}</div><div class="cohort">${ev?.courseName}</div></div>`;
              }).join('');
-
+             
              cellsHtml += `<div class="cell ${isNonWorkingDay ? 'bg-gray' : ''}"><div class="day-num">${dayNum}</div>${eventsHtml}</div>`;
-        } else {
-             cellsHtml += `<div class="cell bg-gray"></div>`;
+        } else { 
+            cellsHtml += `<div class="cell bg-gray"></div>`; 
         }
-        
         if (dayNum >= pDaysInMonth && (i + 1) % 7 === 0) break;
     }
-
+    
     printWindow.document.write(`
-      <html>
-        <head>
-          <title>${teacherName} - ${MONTH_NAMES[pMonth]} ${pYear}</title>
-          <style>
-            body { font-family: 'Segoe UI', sans-serif; padding: 20px; }
-            h1 { text-align: center; color: #333; margin-bottom: 5px; }
-            h2 { text-align: center; color: #666; margin-top: 0; font-size: 18px; font-weight: normal; margin-bottom: 30px; }
-            .grid-container { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid #ddd; border-left: 1px solid #ddd; }
-            .header-cell { background: #f1f5f9; padding: 10px; text-align: center; font-weight: bold; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; text-transform: uppercase; font-size: 12px; color: #475569; }
-            .cell { border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; min-height: 120px; padding: 8px; }
-            .bg-gray { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .day-num { font-weight: bold; color: #333; margin-bottom: 8px; font-size: 14px; }
-            .event { margin-bottom: 8px; font-size: 11px; line-height: 1.4; }
-            .subject { font-weight: bold; color: #0f172a; }
-            .cohort { color: #64748b; }
-          </style>
-        </head>
-        <body>
-          <h1>${teacherName}</h1>
-          <h2>${MONTH_NAMES[pMonth]} ${pYear}</h2>
-          <div class="grid-container">
-            <div class="header-cell">Mon</div><div class="header-cell">Tue</div><div class="header-cell">Wed</div>
-            <div class="header-cell">Thu</div><div class="header-cell">Fri</div><div class="header-cell">Sat</div><div class="header-cell">Sun</div>
-            ${cellsHtml}
-          </div>
-          <script>window.onload = function() { window.print(); }</script>
-        </body>
-      </html>
+        <html>
+            <head>
+                <title>${teacherName} - ${MONTH_NAMES[pMonth]} ${pYear}</title>
+                <style>
+                    body { font-family: 'Segoe UI', sans-serif; padding: 20px; } 
+                    h1 { text-align: center; color: #333; margin-bottom: 5px; } 
+                    h2 { text-align: center; color: #666; margin-top: 0; font-size: 18px; font-weight: normal; margin-bottom: 30px; } 
+                    .grid-container { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid #ddd; border-left: 1px solid #ddd; } 
+                    .header-cell { background: #f1f5f9; padding: 10px; text-align: center; font-weight: bold; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; text-transform: uppercase; font-size: 12px; color: #475569; } 
+                    .cell { border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; min-height: 120px; padding: 8px; } 
+                    .bg-gray { background: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } 
+                    .day-num { font-weight: bold; color: #333; margin-bottom: 8px; font-size: 14px; } 
+                    .event { margin-bottom: 8px; font-size: 11px; line-height: 1.4; } 
+                    .subject { font-weight: bold; color: #0f172a; } 
+                    .cohort { color: #64748b; }
+                </style>
+            </head>
+            <body>
+                <h1>${teacherName}</h1>
+                <h2>${MONTH_NAMES[pMonth]} ${pYear}</h2>
+                <div class="grid-container">
+                    <div class="header-cell">Mon</div><div class="header-cell">Tue</div><div class="header-cell">Wed</div>
+                    <div class="header-cell">Thu</div><div class="header-cell">Fri</div><div class="header-cell">Sat</div><div class="header-cell">Sun</div>
+                    ${cellsHtml}
+                </div>
+                <script>window.onload = function() { window.print(); }</script>
+            </body>
+        </html>
     `);
     printWindow.document.close();
   };
 
   const isSchoolHoliday = (dateObj: Date) => {
-      const time = dateObj.getTime();
+      const time = dateObj.getTime(); 
       let hasTermsDefined = false;
-
+      
       for (const y of academicYears) {
-          if (Array.isArray(y.terms) && y.terms.length > 0) {
+          if (y.terms.length > 0) {
               hasTermsDefined = true;
               for (const t of y.terms) {
                   const tStart = new Date(t.start_date || t.start).setHours(0,0,0,0);
                   const tEnd = new Date(t.end_date || t.end).setHours(23,59,59,999);
-                  if (time >= tStart && time <= tEnd) {
+                  if (time >= tStart && time <= tEnd) { 
                       return false; 
                   }
               }
@@ -393,36 +399,38 @@ export const CalendarView = () => {
       return hasTermsDefined;
   };
 
-  const year = currentDate.getFullYear();
+  const year = currentDate.getFullYear(); 
   const month = currentDate.getMonth();
   
   const getDaysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
-  const getFirstDayOfMonth = (y: number, m: number) => {
-      const day = new Date(y, m, 1).getDay();
+  const getFirstDayOfMonth = (y: number, m: number) => { 
+      const day = new Date(y, m, 1).getDay(); 
       return day === 0 ? 6 : day - 1; 
   };
   
-  const daysInMonth = getDaysInMonth(year, month);
+  const daysInMonth = getDaysInMonth(year, month); 
   const firstDay = getFirstDayOfMonth(year, month);
-  const days = Array.from({ length: 42 }, (_, i) => {
-      const dayNum = i - firstDay + 1;
-      if (dayNum > 0 && dayNum <= daysInMonth) return dayNum;
-      return null;
+  const days = Array.from({ length: 42 }, (_, i) => { 
+      const dayNum = i - firstDay + 1; 
+      if (dayNum > 0 && dayNum <= daysInMonth) return dayNum; 
+      return null; 
   });
-
+  
   const handlePrev = () => setCurrentDate(new Date(year, month - 1, 1));
   const handleNext = () => setCurrentDate(new Date(year, month + 1, 1));
-  const handleToday = () => {
-      const now = new Date();
-      setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  const handleToday = () => { 
+      const now = new Date(); 
+      setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1)); 
   };
 
   const getUnitRangeForEvent = (event: any) => {
       const unitEvents = events.filter(e => e.instanceId === event.instanceId && e.summary === event.summary);
       if (unitEvents.length === 0) return '';
+      
       const sortedEvents = [...unitEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
-      const firstDate = sortedEvents[0].start;
+      const firstDate = sortedEvents[0].start; 
       const lastDate = sortedEvents[sortedEvents.length - 1].start;
+      
       const formatStr = (d: Date) => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
       if (firstDate.getTime() === lastDate.getTime()) return formatStr(firstDate);
       return `${formatStr(firstDate)} - ${formatStr(lastDate)}`;
@@ -437,57 +445,60 @@ export const CalendarView = () => {
       <div className="flex flex-wrap justify-between items-center mb-6 gap-4">
         <div className="flex items-center gap-4">
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                <CalIcon className="text-blue-600" />
+                <CalIcon className="text-blue-600" /> 
                 {MONTH_NAMES[month]} {year}
             </h1>
             
             <div className="relative ml-6">
                 <Filter className="absolute left-3 top-2.5 text-slate-400" size={16} />
                 <select 
-                    value={selectedFilter}
-                    onChange={(e) => handleFilterChange(e.target.value)}
+                    value={selectedFilter} 
+                    onChange={(e) => handleFilterChange(e.target.value)} 
                     className="pl-10 pr-4 py-2 border border-slate-300 rounded-lg bg-white text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-sm cursor-pointer min-w-[240px]"
                 >
                     <option value="all">Show All</option>
                     <optgroup label="Cohorts">
-                        {instances.map(inst => ( <option key={inst.id} value={inst.id}>{inst.name}</option> ))}
+                        {instances.map(inst => ( 
+                            <option key={inst.id} value={inst.id}>{inst.name}</option> 
+                        ))}
                     </optgroup>
                     <optgroup label="Teachers">
-                        {teachers.map(t => ( <option key={t.id} value={t.id}>{t.name}</option> ))}
+                        {teachers.map(t => ( 
+                            <option key={t.id} value={t.id}>{t.name}</option> 
+                        ))}
                     </optgroup>
                 </select>
             </div>
         </div>
 
         <div className="flex gap-2">
-            <button 
-                onClick={handleExportCSV}
-                className="px-3 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-bold text-sm shadow-sm flex items-center gap-2"
-            >
+            <button onClick={handleExportCSV} className="px-3 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-bold text-sm shadow-sm flex items-center gap-2">
                 <Download size={16} /> CSV
             </button>
-
             {filterType === 'teacher' && (
-                <button 
-                    onClick={handleSmartPrint}
-                    className="px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-bold text-sm shadow-sm flex items-center gap-2 mr-4 transition-colors"
-                    title="Print Monthly Schedule"
-                >
+                <button onClick={handleSmartPrint} className="px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-bold text-sm shadow-sm flex items-center gap-2 mr-4 transition-colors" title="Print Monthly Schedule">
                     <Printer size={16} /> Print Month Grid
                 </button>
             )}
-
             <div className="flex gap-1 bg-white p-1 rounded-lg border shadow-sm">
-                <button onClick={handlePrev} className="p-1.5 hover:bg-slate-50 rounded"><ChevronLeft size={20} /></button>
-                <button onClick={handleToday} className="px-3 py-1.5 text-sm font-bold hover:bg-slate-50 rounded">Today</button>
-                <button onClick={handleNext} className="p-1.5 hover:bg-slate-50 rounded"><ChevronRight size={20} /></button>
+                <button onClick={handlePrev} className="p-1.5 hover:bg-slate-50 rounded">
+                    <ChevronLeft size={20} />
+                </button>
+                <button onClick={handleToday} className="px-3 py-1.5 text-sm font-bold hover:bg-slate-50 rounded">
+                    Today
+                </button>
+                <button onClick={handleNext} className="p-1.5 hover:bg-slate-50 rounded">
+                    <ChevronRight size={20} />
+                </button>
             </div>
         </div>
       </div>
 
       {/* Days Header */}
       <div className="grid grid-cols-7 mb-2">
-        {DAYS_OF_WEEK.map(d => <div key={d} className="text-center font-bold text-slate-500 text-sm uppercase">{d}</div>)}
+          {DAYS_OF_WEEK.map(d => (
+              <div key={d} className="text-center font-bold text-slate-500 text-sm uppercase">{d}</div>
+          ))}
       </div>
 
       {/* Calendar Grid */}
@@ -495,21 +506,15 @@ export const CalendarView = () => {
         {days.map((day, idx) => {
             if (!day) return <div key={idx} className="bg-slate-50/50" />;
             
-            const cellDate = new Date(year, month, day);
+            const cellDate = new Date(year, month, day); 
             const dateKey = getLocalIsoString(cellDate);
             
             const dayEvents = filteredEvents.filter(e => getLocalIsoString(e.start) === dateKey);
             const isToday = getLocalIsoString(new Date()) === dateKey;
-            
             const isNonWorkingDay = isSchoolHoliday(cellDate) || !!holidayMap[dateKey];
 
             return (
-                <div 
-                    key={idx} 
-                    className={`p-2 min-h-[120px] overflow-hidden transition-colors group ${
-                        isNonWorkingDay ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'
-                    }`}
-                >
+                <div key={idx} className={`p-2 min-h-[120px] overflow-hidden transition-colors group ${isNonWorkingDay ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'}`}>
                     <div className="text-sm font-bold text-slate-400 mb-1 flex justify-between items-center">
                         <span className={isToday ? "bg-blue-600 text-white w-6 h-6 flex items-center justify-center rounded-full shadow-sm" : ""}>{day}</span>
                         <div className="flex items-center gap-1">
@@ -521,12 +526,9 @@ export const CalendarView = () => {
                         {dayEvents.map((ev, i) => (
                             <div 
                                 key={i} 
-                                onClick={() => setSelectedEvent(ev)}
-                                className={`text-[10px] p-1.5 rounded border-l-4 shadow-sm cursor-pointer transition-transform hover:scale-[1.02] active:scale-95 ${ev.isUnassigned ? 'bg-slate-100 border-slate-300 text-slate-500' : 'text-white'}`}
-                                style={{ 
-                                    backgroundColor: ev.isUnassigned ? '#f1f5f9' : ev.teacherColor,
-                                    borderColor: ev.isUnassigned ? '#cbd5e1' : undefined 
-                                }}
+                                onClick={() => setSelectedEvent(ev)} 
+                                className={`text-[10px] p-1.5 rounded border-l-4 shadow-sm cursor-pointer transition-transform hover:scale-[1.02] active:scale-95 ${ev.isUnassigned ? 'bg-slate-100 border-slate-300 text-slate-500' : 'text-white'}`} 
+                                style={{ backgroundColor: ev.isUnassigned ? '#f1f5f9' : ev.teacherColor, borderColor: ev.isUnassigned ? '#cbd5e1' : undefined }}
                             >
                                 <div className="font-bold truncate">{ev.summary}</div>
                                 <div className="truncate opacity-90 flex items-center gap-1">
@@ -545,7 +547,9 @@ export const CalendarView = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4" onClick={() => setSelectedEvent(null)}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
                 <div className="h-24 relative p-6 flex flex-col justify-end" style={{ backgroundColor: selectedEvent.teacherColor }}>
-                    <button onClick={() => setSelectedEvent(null)} className="absolute top-4 right-4 bg-black/10 hover:bg-black/20 text-white rounded-full p-1 transition-colors"><X size={18} /></button>
+                    <button onClick={() => setSelectedEvent(null)} className="absolute top-4 right-4 bg-black/10 hover:bg-black/20 text-white rounded-full p-1 transition-colors">
+                        <X size={18} />
+                    </button>
                     <h3 className="text-white font-bold text-xl drop-shadow-md leading-tight">{selectedEvent.summary}</h3>
                 </div>
                 <div className="p-6 space-y-4">
@@ -560,6 +564,7 @@ export const CalendarView = () => {
                             </div>
                         </div>
                     </div>
+                    
                     <div className="flex items-start gap-3">
                         <div className="p-2 bg-slate-100 rounded-lg text-slate-500"><User size={20} /></div>
                         <div>
