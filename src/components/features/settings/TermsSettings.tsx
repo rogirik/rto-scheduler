@@ -109,7 +109,7 @@ export const TermsSettings = () => {
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Academic Year</label>
             <select value={currentYear} onChange={e => setCurrentYear(e.target.value)} className="border border-slate-300 rounded-lg p-2 text-sm font-bold bg-slate-50 min-w-[100px] outline-none focus:border-blue-500">
-              {[2025, 2026, 2027, 2028].map(y => <option key={y} value={y}>{y}</option>)}
+              {[2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
           <div>
