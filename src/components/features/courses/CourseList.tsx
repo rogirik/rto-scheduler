@@ -37,6 +37,42 @@ const applyLocalTimeFix = (events: any[], instance: any) => {
     });
 };
 
+// Reusable State Matcher
+const isStateMatch = (item: any, selectedState: string) => {
+    if (!selectedState || selectedState === 'ALL' || selectedState === 'NATIONAL') return true;
+    if (item && item.state) {
+        const s = item.state.toString().trim().toUpperCase();
+        if (s === 'NATIONAL' || s === 'ALL') return true;
+        return s.includes(selectedState);
+    }
+    const name = (item?.name || (typeof item === 'string' ? item : '')).toUpperCase();
+    const allStates = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'TAS', 'NT', 'ACT'];
+    
+    if (name.includes(`${selectedState} -`) || name.includes(`${selectedState}-`) || name.includes(`(${selectedState})`)) {
+        return true;
+    }
+    const otherStates = allStates.filter(s => s !== selectedState);
+    for (const st of otherStates) {
+        if (name.includes(`${st} -`) || name.includes(`${st}-`) || name.includes(`(${st})`)) {
+            return false;
+        }
+    }
+    return true; 
+};
+
+// Deep Filter Helper
+const getFilteredAcademicYears = (rawYears: AcademicYear[], selectedState: string) => {
+    const cleanState = (selectedState || 'VIC').toUpperCase();
+    return rawYears
+        .filter(y => isStateMatch(y, cleanState))
+        .map(y => {
+            const yCopy = { ...y };
+            if (Array.isArray(yCopy.terms)) yCopy.terms = yCopy.terms.filter(t => isStateMatch(t, cleanState));
+            if (Array.isArray(yCopy.holidays)) yCopy.holidays = yCopy.holidays.filter(h => isStateMatch(h, cleanState));
+            return yCopy;
+        });
+};
+
 export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -50,7 +86,7 @@ export const CourseList = () => {
   const [allocations, setAllocations] = useState<UnitAllocation[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
+  const [rawAcademicYears, setRawAcademicYears] = useState<AcademicYear[]>([]);
   
   const [scheduleOverrides, setScheduleOverrides] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -69,54 +105,23 @@ export const CourseList = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
 
-      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes, settingsRes] = await Promise.all([
+      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'), 
         ApiService.getSubjects(),
         ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('schedule_overrides').select('*'),
-        ApiService.getSettings().catch(() => null)
+        supabase.from('schedule_overrides').select('*')
       ]);
 
       setScheduleOverrides(overridesRes.data || []); 
+      setRawAcademicYears(yearRes || []);
 
       let filteredInstances = iRes || [];
       let filteredTemplates = tRes || [];
       let filteredAllocations = aRes || [];
       let filteredTeachers = teachRes.data || [];
-      let rawYears = yearRes || [];
-
-      const isStateMatch = (itemState: any, selectedState: string) => {
-          if (!itemState) return true; 
-          const s = itemState.toString().trim().toUpperCase();
-          if (s === 'NATIONAL' || s === 'ALL') return true;
-          return s.includes(selectedState);
-      };
-
-      const rawState = settingsRes?.state || settingsRes?.default_state;
-      let filteredYears = rawYears;
-      
-      if (rawState) {
-          const cleanState = rawState.toString().trim().toUpperCase();
-          filteredYears = rawYears
-              .filter((y: any) => isStateMatch(y.state, cleanState))
-              .map((y: any) => {
-                  const yCopy = { ...y };
-                  if (Array.isArray(yCopy.terms)) {
-                      yCopy.terms = yCopy.terms.filter((t: any) => isStateMatch(t.state, cleanState));
-                  }
-                  if (Array.isArray(yCopy.holidays)) {
-                      yCopy.holidays = yCopy.holidays.filter((h: any) => {
-                          const hState = typeof h === 'object' ? h.state : null;
-                          return isStateMatch(hState, cleanState);
-                      });
-                  }
-                  return yCopy;
-              });
-      }
-      setAcademicYears(filteredYears);
 
       if (user) {
           let myOrgId = null;
@@ -177,6 +182,71 @@ export const CourseList = () => {
     }
   };
 
+  const runStateMigration = async () => {
+      if (!confirm("This will split the 2026 JSON into separate states. Ready?")) return;
+      setProcessing(true);
+
+      try {
+          const { data, error } = await supabase
+              .from('academic_years')
+              .select('*')
+              .eq('id', '2026')
+              .single();
+
+          if (error || !data) throw new Error("Could not find the original '2026' row.");
+
+          const rawTerms = typeof data.terms === 'string' ? JSON.parse(data.terms) : data.terms;
+          const rawHolidays = typeof data.holidays === 'string' ? JSON.parse(data.holidays) : data.holidays;
+
+          const states = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'ACT', 'TAS', 'NT'];
+
+          for (const state of states) {
+              const stateTerms = rawTerms
+                  .filter((t: any) => t.name.toUpperCase().includes(state))
+                  .map((t: any) => ({
+                      ...t,
+                      name: t.name.replace(new RegExp(`^${state}\\s*-\\s*`, 'i'), '').trim()
+                  }));
+
+              const stateHolidays = rawHolidays.filter((h: any) => {
+                  const hName = h.name.toUpperCase();
+                  const hasBrackets = hName.includes('(');
+
+                  if (!hasBrackets) return true; 
+                  if (hName.includes(`(${state})`)) return true; 
+                  if (hName.includes('NATIONAL EX')) {
+                      if (state === 'WA' && hName.includes('WA')) return false;
+                      if (state === 'QLD' && hName.includes('QLD')) return false;
+                      return true;
+                  }
+                  return false;
+              });
+
+              if (stateTerms.length > 0) {
+                  const newRow = {
+                      id: `2026-${state}`,
+                      user_id: data.user_id,
+                      state: state,
+                      terms: JSON.stringify(stateTerms),
+                      holidays: JSON.stringify(stateHolidays)
+                  };
+                  await supabase.from('academic_years').insert([newRow]);
+              }
+          }
+
+          await supabase.from('academic_years').delete().eq('id', '2026');
+
+          alert("Migration complete! Your database is now cleanly separated by state.");
+          await loadData();
+          
+      } catch (error: any) {
+          console.error("Migration failed:", error);
+          alert(error.message);
+      } finally {
+          setProcessing(false);
+      }
+  };
+
   const handleDelete = async (table: string, id: string) => {
     if (!confirm('Permanently delete this record?')) return;
     try { await ApiService.delete(table as any, id); loadData(); } catch (e) { alert("Delete failed."); }
@@ -192,7 +262,6 @@ export const CourseList = () => {
     }
   };
 
-  // --- NEW: AUTO ARCHIVE ENGINE ---
   const handleAutoArchive = async () => {
       if (!confirm("This will scan all active cohorts and automatically archive any that have passed their final scheduled class date. Proceed?")) return;
       setArchiving(true);
@@ -203,20 +272,19 @@ export const CourseList = () => {
           const toArchiveIds: string[] = [];
 
           instances.forEach(instance => {
-              // Skip if already archived
               if (instance.status === 'archived' || instance.status === 'completed') return;
 
               const template = templates.find(t => t.id === instance.template_id);
               if (!template) return;
 
-              let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+              const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
+              let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
               
               if (events.length > 0) {
                   events.sort((a,b) => a.start.getTime() - b.start.getTime());
                   const lastEventDate = new Date(events[events.length - 1].start);
                   lastEventDate.setHours(0,0,0,0);
 
-                  // If the final class date is strictly before today, flag for archiving
                   if (lastEventDate.getTime() < today.getTime()) {
                       toArchiveIds.push(instance.id);
                   }
@@ -229,7 +297,6 @@ export const CourseList = () => {
               return;
           }
 
-          // Batch update Supabase
           for (const id of toArchiveIds) {
               await supabase.from('course_instances').update({ status: 'archived' }).eq('id', id);
           }
@@ -256,7 +323,8 @@ export const CourseList = () => {
             const temp = templates.find(t => t.id === inst.template_id);
             if (!temp) return;
             
-            let evs = generateAllEventsForInstance(inst as any, academicYears, temp, subjects, teachers, scheduleOverrides);
+            const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (inst as any).state);
+            let evs = generateAllEventsForInstance(inst as any, instanceAcademicYears, temp, subjects, teachers, scheduleOverrides);
             evs = applyLocalTimeFix(evs, inst);
 
             allGlobalEvents.push(...evs.map(e => ({ ...e, instanceId: inst.id })));
@@ -366,7 +434,9 @@ export const CourseList = () => {
       const template = templates.find(t => t.id === instance.template_id);
       if (!template) return;
       
-      let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+      const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
+
+      let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
       events = applyLocalTimeFix(events, instance);
 
       if (events.length === 0) {
@@ -384,7 +454,7 @@ export const CourseList = () => {
 
       const timelineInjections: any[] = [];
       
-      academicYears.forEach((y: any) => {
+      instanceAcademicYears.forEach((y: any) => {
           if (Array.isArray(y.terms)) {
               y.terms.forEach((t: any) => {
                   const tStart = new Date(t.start_date || t.start);
@@ -576,7 +646,8 @@ export const CourseList = () => {
     let hasClash = false;
     let endDateStr = '';
     
-    let events = generateAllEventsForInstance(instance as any, academicYears, template, subjects, teachers, scheduleOverrides);
+    const instanceAcademicYears = getFilteredAcademicYears(rawAcademicYears, (instance as any).state);
+    let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
     
     if (events.length > 0) {
         events.sort((a,b) => a.start.getTime() - b.start.getTime());
@@ -598,7 +669,6 @@ export const CourseList = () => {
     return { total, assigned: assignedCount, unallocatedHours, hasClash, endDateStr };
   };
 
-  // Filter instances by active/archived toggle AND search term
   const displayedInstances = instances.filter(i => {
       const matchSearch = i.name.toLowerCase().includes(searchTerm.toLowerCase());
       const matchStatus = viewMode === 'active' ? (i.status !== 'archived' && i.status !== 'completed') : (i.status === 'archived' || i.status === 'completed');
@@ -620,6 +690,9 @@ export const CourseList = () => {
         </div>
         
         <div className="flex gap-3">
+            <button onClick={runStateMigration} disabled={processing} className="bg-orange-500 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-600 shadow-sm transition-all">
+                {processing ? <Loader2 className="animate-spin" size={18} /> : <AlertTriangle size={18} />} Split JSON
+            </button>
             <button onClick={handleAutoArchive} disabled={archiving} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-900 shadow-sm transition-all">
                 {archiving ? <Loader2 className="animate-spin" size={18} /> : <Archive size={18} />} Auto Archive
             </button>
@@ -671,7 +744,7 @@ export const CourseList = () => {
           <tbody className="divide-y">
             {displayedInstances.length === 0 ? (
                 <tr>
-                    <td colspan={4} className="p-8 text-center text-slate-400 italic">
+                    <td colSpan={4} className="p-8 text-center text-slate-400 italic">
                         {viewMode === 'active' ? 'No active cohorts found.' : 'Archive is empty.'}
                     </td>
                 </tr>
@@ -682,7 +755,10 @@ export const CourseList = () => {
               return (
                 <tr key={instance.id} className={`hover:bg-slate-50 transition-all ${viewMode === 'archived' ? 'opacity-70' : ''}`}>
                   <td className="p-4">
-                    <div className="font-bold text-slate-800 text-lg">{instance.name}</div>
+                    <div className="font-bold text-slate-800 text-lg">
+                        {instance.name} 
+                        <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 ml-2 rounded border border-slate-200 uppercase tracking-wider">{(instance as any).state || 'VIC'}</span>
+                    </div>
                     <div className="mt-1 flex flex-wrap gap-2">
                         {isFullyAllocated ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-100">
