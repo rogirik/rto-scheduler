@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
-import type { TermItem, HolidayItem, AcademicYear } from '../../../services/api';
+import type { TermItem, HolidayItem } from '../../../services/api';
 import { Trash2, Calendar, Coffee, Save, Loader2, MapPin, Plus } from 'lucide-react';
 
 export const TermsSettings = () => {
@@ -33,11 +32,11 @@ export const TermsSettings = () => {
         .single();
 
       if (error && error.code !== 'PGRST116') {
-        console.error(error);
+        console.error("Supabase Error:", error);
       }
       
       if (data) {
-        // Parse safely in case of stringified JSON
+        // Parse safely in case of stringified JSON from older migrations
         const parsedTerms = typeof data.terms === 'string' ? JSON.parse(data.terms || '[]') : (data.terms || []);
         const parsedHolidays = typeof data.holidays === 'string' ? JSON.parse(data.holidays || '[]') : (data.holidays || []);
         
@@ -109,6 +108,7 @@ export const TermsSettings = () => {
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Academic Year</label>
             <select value={currentYear} onChange={e => setCurrentYear(e.target.value)} className="border border-slate-300 rounded-lg p-2 text-sm font-bold bg-slate-50 min-w-[100px] outline-none focus:border-blue-500">
+              {/* Note the added years here! */}
               {[2025, 2026, 2027, 2028, 2029, 2030].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
@@ -128,7 +128,7 @@ export const TermsSettings = () => {
             </select>
           </div>
         </div>
-        <button onClick={handleSaveAll} disabled={saving} className="bg-slate-800 text-white px-5 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-slate-900 disabled:opacity-50 transition-all">
+        <button onClick={handleSaveAll} disabled={saving || loading} className="bg-slate-800 text-white px-5 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-slate-900 disabled:opacity-50 transition-all">
           {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />} Save Changes
         </button>
       </div>
