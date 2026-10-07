@@ -83,7 +83,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     fetchDependencies();
   }, [initialData]);
 
-  // AGGRESSIVE PARSER: Forces double-stringified arrays back to standard JSON
   const filteredAcademicYears = useMemo(() => {
       const selectedState = (formData.state || 'VIC').toUpperCase();
       return rawAcademicYears.map(y => {
@@ -96,7 +95,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const s = ((y as any).state || '').toString().toUpperCase();
           if (s === 'NATIONAL' || s === 'ALL' || s === selectedState) return true;
           if (y.id && String(y.id).toUpperCase().includes(`-${selectedState}`)) return true;
-          if (!s && !String(y.id).includes('-')) return true; // global fallback
+          if (!s && !String(y.id).includes('-')) return true; 
           return false;
       });
   }, [rawAcademicYears, formData.state]);
@@ -112,7 +111,13 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
           
-          let events = generateAllEventsForInstance(mockInstance, filteredAcademicYears, selectedTemplate, subjects, [], []);
+          // THE FIX: Translate the ID back to 4 digits for the scheduler
+          const yearsForScheduler = filteredAcademicYears.map(y => ({
+              ...y,
+              id: String(y.id).split('-')[0]
+          }));
+          
+          let events = generateAllEventsForInstance(mockInstance, yearsForScheduler, selectedTemplate, subjects, [], []);
           events = events.sort((a, b) => a.start.getTime() - b.start.getTime());
           
           setGeneratedEvents(events);
@@ -124,9 +129,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
   const timeline = useMemo(() => {
       if (generatedEvents.length === 0) return [];
-      
       const merged = generatedEvents.map(e => ({ ...e, type: 'class' }));
-      
       const firstDate = new Date(formData.start_date);
       firstDate.setHours(0,0,0,0);
       const lastDate = new Date(generatedEvents[generatedEvents.length - 1].start);
@@ -140,19 +143,16 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                   const tStart = new Date(t.start_date || t.start);
                   if (isNaN(tStart.getTime())) return;
                   tStart.setHours(0,0,0,0);
-                  
                   if (tStart.getTime() >= firstDate.getTime() && tStart.getTime() <= lastDate.getTime()) {
                       timelineInjections.push({ type: 'term_marker', start: tStart, summary: t.name || 'Term Start' });
                   }
               });
           }
-
           if (Array.isArray(y.holidays)) {
               y.holidays.forEach((h: any) => {
                   const hDate = typeof h === 'string' ? new Date(h) : new Date(h.date || h);
                   if (isNaN(hDate.getTime())) return;
                   hDate.setHours(12,0,0,0); 
-                  
                   if (hDate.getTime() >= firstDate.getTime() && hDate.getTime() <= lastDate.getTime()) {
                       timelineInjections.push({ type: 'holiday', start: hDate, summary: typeof h === 'string' ? 'Holiday / Break' : (h.name || 'Holiday / Break') });
                   }
@@ -183,48 +183,33 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   const toggleGlobalDay = (dayId: number) => {
     setFormData(prev => ({
         ...prev,
-        allowed_days: prev.allowed_days.includes(dayId)
-            ? prev.allowed_days.filter(d => d !== dayId)
-            : [...prev.allowed_days, dayId].sort()
+        allowed_days: prev.allowed_days.includes(dayId) ? prev.allowed_days.filter(d => d !== dayId) : [...prev.allowed_days, dayId].sort()
     }));
   };
 
   const updateSubjectRule = (subjectId: string, field: 'start_date' | 'allowed_days', value: any) => {
       setFormData(prev => {
           const currentRule = prev.subject_rules[subjectId] || { start_date: prev.start_date, allowed_days: prev.allowed_days };
-          return {
-              ...prev,
-              subject_rules: {
-                  ...prev.subject_rules,
-                  [subjectId]: { ...currentRule, [field]: value }
-              }
-          };
+          return { ...prev, subject_rules: { ...prev.subject_rules, [subjectId]: { ...currentRule, [field]: value } } };
       });
   };
 
   const toggleSubjectDay = (subjectId: string, dayId: number) => {
       const currentRule = formData.subject_rules[subjectId] || { start_date: formData.start_date, allowed_days: formData.allowed_days };
       const currentDays = currentRule.allowed_days;
-      const newDays = currentDays.includes(dayId) 
-          ? currentDays.filter(d => d !== dayId) 
-          : [...currentDays, dayId].sort();
-      
+      const newDays = currentDays.includes(dayId) ? currentDays.filter(d => d !== dayId) : [...currentDays, dayId].sort();
       updateSubjectRule(subjectId, 'allowed_days', newDays);
   };
 
   const handleAddManualDate = () => {
       if (!newAddDate) return;
-      if (!formData.additional_dates.includes(newAddDate)) {
-          setFormData(prev => ({ ...prev, additional_dates: [...prev.additional_dates, newAddDate].sort() }));
-      }
+      if (!formData.additional_dates.includes(newAddDate)) setFormData(prev => ({ ...prev, additional_dates: [...prev.additional_dates, newAddDate].sort() }));
       setNewAddDate('');
   };
 
   const handleSkipDateFromList = (dateObj: Date) => {
       const dateStr = getLocalIsoString(dateObj);
-      if (!formData.excluded_dates.includes(dateStr)) {
-          setFormData(prev => ({ ...prev, excluded_dates: [...prev.excluded_dates, dateStr].sort() }));
-      }
+      if (!formData.excluded_dates.includes(dateStr)) setFormData(prev => ({ ...prev, excluded_dates: [...prev.excluded_dates, dateStr].sort() }));
   };
 
   const removeOverrideDate = (type: 'add' | 'exclude', dateToRemove: string) => {
@@ -241,19 +226,10 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
     try {
         const payload = {
-            name: formData.name,
-            template_id: formData.template_id,
-            start_date: formData.start_date,
-            start_time: formData.start_time,
-            hours_per_day: formData.hours_per_day,
-            delivery_mode: formData.delivery_mode,
-            state: formData.state,
-            scheduling_mode: formData.scheduling_mode,
-            allowed_days: formData.allowed_days,
-            subject_rules: formData.subject_rules,
-            additional_dates: formData.additional_dates,
-            excluded_dates: formData.excluded_dates,
-            status: 'active'
+            name: formData.name, template_id: formData.template_id, start_date: formData.start_date,
+            start_time: formData.start_time, hours_per_day: formData.hours_per_day, delivery_mode: formData.delivery_mode,
+            state: formData.state, scheduling_mode: formData.scheduling_mode, allowed_days: formData.allowed_days,
+            subject_rules: formData.subject_rules, additional_dates: formData.additional_dates, excluded_dates: formData.excluded_dates, status: 'active'
         };
 
         let instanceId = initialData?.id;
@@ -262,12 +238,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             await supabase.from('course_instances').update(payload).eq('id', instanceId);
         } else {
             const { data: { user } } = await supabase.auth.getUser();
-            const { data: newInstance, error } = await supabase
-                .from('course_instances')
-                .insert([{ ...payload, user_id: user?.id }])
-                .select()
-                .single();
-                
+            const { data: newInstance, error } = await supabase.from('course_instances').insert([{ ...payload, user_id: user?.id }]).select().single();
             if (error) throw error;
             instanceId = newInstance.id;
         }
@@ -279,7 +250,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             formData.excluded_dates.forEach(date => overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'remove' }));
             if (overridesToInsert.length > 0) await supabase.from('schedule_overrides').insert(overridesToInsert);
         }
-
         onSuccess();
     } catch (error) {
         console.error(error);
@@ -327,26 +297,14 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             return `<tr class="term-row"><td colspan="4">🚩 ${item.summary} Begins</td></tr>`;
         }
         if (item.type === 'holiday' || item.type === 'manual_skip') {
-            return `<tr class="holiday-row">
-                        <td style="text-align: center;">-</td>
-                        <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong></td>
-                        <td colspan="2">🌴 ${item.summary} (No Class)</td>
-                    </tr>`;
+            return `<tr class="holiday-row"><td style="text-align: center;">-</td><td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong></td><td colspan="2">🌴 ${item.summary} (No Class)</td></tr>`;
         }
-
         const cNum = classCounterPrint++;
-        return `<tr>
-                    <td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td>
-                    <td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</span></td>
-                    <td colspan="2"><strong>${item.summary}</strong></td>
-                </tr>`;
+        return `<tr><td style="text-align: center; font-weight: bold; color: #64748b;">${cNum}</td><td><strong>${item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong><br/><span style="font-size:12px;color:#64748b">${formData.start_time || '09:00'} (${formData.hours_per_day || 6} hrs)</span></td><td colspan="2"><strong>${item.summary}</strong></td></tr>`;
     }).join('');
 
     printWin.document.write(`
-      <html>
-        <head>
-          <title>${formData.name || 'Cohort'} - Schedule</title>
-          <style>
+      <html><head><title>${formData.name || 'Cohort'} - Schedule</title><style>
             body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 24px; color: #1e293b; }
             h1 { font-size: 22px; margin-bottom: 4px; }
             .meta { font-size: 12px; color: #64748b; margin-bottom: 20px; line-height: 1.6; }
@@ -355,31 +313,12 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
             tr.term-row td { background: #1e293b; color: white; font-weight: bold; text-transform: uppercase; font-size: 11px; padding: 6px 12px; }
             tr.holiday-row td { background: #fef3c7; color: #92400e; font-weight: 600; }
-          </style>
-        </head>
-        <body>
+          </style></head><body>
           <h1>${formData.name || 'Cohort Schedule Preview'}</h1>
-          <div class="meta">
-            <strong>Template:</strong> ${templateName} &bull; 
-            <strong>Mode:</strong> ${formData.delivery_mode} &bull; 
-            <strong>State:</strong> ${formData.state} &bull;
-            <strong>Start Date:</strong> ${formData.start_date}
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 50px; text-align: center;">#</th>
-                <th style="width: 160px;">Date & Time</th>
-                <th colspan="2">Subject / Cluster</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rowsHtml}
-            </tbody>
-          </table>
+          <div class="meta"><strong>Template:</strong> ${templateName} &bull; <strong>Mode:</strong> ${formData.delivery_mode} &bull; <strong>State:</strong> ${formData.state} &bull; <strong>Start Date:</strong> ${formData.start_date}</div>
+          <table><thead><tr><th style="width: 50px; text-align: center;">#</th><th style="width: 160px;">Date & Time</th><th colspan="2">Subject / Cluster</th></tr></thead><tbody>${rowsHtml}</tbody></table>
           <script>window.onload = function() { window.print(); }</script>
-        </body>
-      </html>
+        </body></html>
     `);
     printWin.document.close();
   };
@@ -389,7 +328,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[90vh]">
-        
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
@@ -399,10 +337,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         </div>
 
         <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
-            
             <div className="flex-1 overflow-y-auto p-6 border-r border-slate-100 space-y-8 custom-scrollbar">
                 <form id="schedule-form" onSubmit={handleSubmit} className="space-y-8">
-                    
                     <div className="space-y-4">
                         <label className="block text-xs font-bold text-blue-600 uppercase mb-2 border-b border-slate-100 pb-2">Core Settings</label>
                         <div className="grid grid-cols-2 gap-4">
@@ -429,7 +365,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                     <option value="TAS">Tasmania (TAS)</option>
                                     <option value="NT">Northern Territory (NT)</option>
                                     <option value="ACT">Aust. Capital Territory (ACT)</option>
-                                    <option value="National">National / All</option>
                                 </select>
                             </div>
 
@@ -511,21 +446,13 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                                     <div className="flex gap-4 items-center">
                                                         <div className="w-1/3">
                                                             <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Start Date</label>
-                                                            <input 
-                                                                type="date" 
-                                                                className="w-full border border-slate-300 p-1.5 text-xs rounded outline-none focus:ring-1 focus:ring-purple-500"
-                                                                value={rule.start_date || ''}
-                                                                onChange={(e) => updateSubjectRule(sub.id, 'start_date', e.target.value)}
-                                                            />
+                                                            <input type="date" className="w-full border border-slate-300 p-1.5 text-xs rounded outline-none focus:ring-1 focus:ring-purple-500" value={rule.start_date || ''} onChange={(e) => updateSubjectRule(sub.id, 'start_date', e.target.value)} />
                                                         </div>
                                                         <div className="w-2/3">
                                                             <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Days</label>
                                                             <div className="flex gap-1">
                                                                 {DAYS_MAP.map(day => (
-                                                                    <button 
-                                                                        key={day.id} type="button" onClick={() => toggleSubjectDay(sub.id, day.id)}
-                                                                        className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold transition-all ${rule.allowed_days?.includes(day.id) ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}
-                                                                    >
+                                                                    <button key={day.id} type="button" onClick={() => toggleSubjectDay(sub.id, day.id)} className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold transition-all ${rule.allowed_days?.includes(day.id) ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
                                                                         {day.short}
                                                                     </button>
                                                                 ))}
@@ -550,17 +477,11 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             </div>
 
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
-                
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
                     <div className="flex items-center gap-2">
                         {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
-                        <button
-                            type="button"
-                            onClick={handleDownloadSchedulePDF}
-                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 border border-slate-200"
-                            title="Download Preview as PDF"
-                        >
+                        <button type="button" onClick={handleDownloadSchedulePDF} className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 border border-slate-200" title="Download Preview as PDF">
                             <Download size={14} /> PDF
                         </button>
                     </div>
@@ -581,15 +502,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                         <div className="text-center py-10 text-slate-400 italic text-sm">Select a Template and Start Date to generate the schedule.</div>
                     ) : (
                         timeline.map((item, idx) => {
-                            
                             if (item.type === 'term_marker') {
-                                return (
-                                    <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
-                                        <Flag size={16} className="text-blue-400" /> {item.summary}
-                                    </div>
-                                );
+                                return <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md"><Flag size={16} className="text-blue-400" /> {item.summary}</div>;
                             }
-                            
                             if (item.type === 'holiday' || item.type === 'manual_skip') {
                                 return (
                                     <div key={`gap-${idx}`} className="p-2.5 mx-2 rounded-lg border border-dashed border-slate-300 bg-slate-100 flex items-center justify-between gap-3 opacity-80">
@@ -600,11 +515,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                                 <div className="text-[10px] font-bold text-slate-500 uppercase">{item.summary}</div>
                                             </div>
                                         </div>
-                                        {item.type === 'manual_skip' && (
-                                            <button type="button" onClick={() => removeOverrideDate('exclude', getLocalIsoString(item.start))} className="text-slate-400 hover:text-red-500 p-1 transition-colors" title="Restore Date">
-                                                <RotateCcw size={14} />
-                                            </button>
-                                        )}
+                                        {item.type === 'manual_skip' && <button type="button" onClick={() => removeOverrideDate('exclude', getLocalIsoString(item.start))} className="text-slate-400 hover:text-red-500 p-1 transition-colors" title="Restore Date"><RotateCcw size={14} /></button>}
                                     </div>
                                 );
                             }
@@ -625,12 +536,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                             {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{item.summary}</div>}
                                         </div>
                                     </div>
-                                    <button 
-                                        type="button" onClick={() => handleSkipDateFromList(item.start)}
-                                        className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1" title="Skip this date"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
+                                    <button type="button" onClick={() => handleSkipDateFromList(item.start)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1" title="Skip this date"><Trash2 size={16} /></button>
                                 </div>
                             );
                         })
@@ -657,14 +563,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                     </div>
                 </div>
             </div>
-        </div>
-
-        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-            <button type="button" onClick={onClose} className="px-5 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-bold transition-colors">Cancel</button>
-            <button type="submit" form="schedule-form" disabled={loading || calculating} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all">
-                {loading && <Loader2 className="animate-spin" size={16} />}
-                {initialData ? 'Update Cohort' : 'Generate Schedule'}
-            </button>
         </div>
       </div>
     </div>
