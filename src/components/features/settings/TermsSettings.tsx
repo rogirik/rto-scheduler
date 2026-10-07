@@ -49,7 +49,6 @@ export const TermsSettings = () => {
               fTerms = Array.isArray(fTerms) ? fTerms : [];
               fHolidays = Array.isArray(fHolidays) ? fHolidays : [];
 
-              // Extract state-specific terms and strip the old prefix
               const stateTerms = fTerms.filter((t: any) => (t.name || '').toUpperCase().includes(selectedState));
               const cleanTerms = stateTerms.map((t: any) => ({
                   name: t.name.replace(new RegExp(`^${selectedState}\\s*-\\s*`, 'i'), '').trim(),
@@ -57,7 +56,6 @@ export const TermsSettings = () => {
                   end: t.end || t.end_date || ''
               }));
 
-              // Extract state-specific holidays
               const otherStates = ['VIC', 'NSW', 'QLD', 'WA', 'SA', 'TAS', 'NT', 'ACT'].filter(s => s !== selectedState);
               const stateHolidays = fHolidays.filter((h: any) => {
                   const hName = h.name || '';
@@ -90,7 +88,6 @@ export const TermsSettings = () => {
             console.error("Critical JSON Parse Error:", parseError);
         }
         
-        // Ensure legacy start_date maps safely to the new input fields
         const safeTerms = parsedTerms.map((t: any) => ({
             name: t.name || '',
             start: t.start || t.start_date || '',
@@ -124,7 +121,6 @@ export const TermsSettings = () => {
         id: targetId,
         user_id: user?.id,
         state: selectedState,
-        // Double-save the keys so BOTH the UI and the background scheduler can read them perfectly
         terms: terms.map(t => ({ name: t.name, start_date: t.start, end_date: t.end, start: t.start, end: t.end })),
         holidays: holidays.map(h => ({ name: h.name, date: h.date, start_date: h.date, start: h.date }))
       };
