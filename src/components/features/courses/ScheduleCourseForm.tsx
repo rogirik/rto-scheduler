@@ -23,7 +23,6 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// THE FIX: Forces the ID back to a Number so the scheduler's math works flawlessly
 const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => {
     const cleanState = (targetState || 'VIC').toUpperCase();
     
@@ -58,7 +57,7 @@ const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => 
             ...y, 
             terms, 
             holidays, 
-            id: parseInt(String(y.id).split('-')[0], 10) // <-- Forces it to be an Integer
+            id: parseInt(String(y.id).split('-')[0], 10)
         };
     });
 };
@@ -113,8 +112,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           scheduling_mode: (initialData as any).scheduling_mode || 'consecutive',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
           subject_rules: (initialData as any).subject_rules || {},
-          additional_dates: Array.isArray(initialData.additional_dates) ? initialData.additional_dates : [],
-          excluded_dates: Array.isArray(initialData.excluded_dates) ? initialData.excluded_dates : []
+          additional_dates: Array.isArray((initialData as any).additional_dates) ? (initialData as any).additional_dates : [],
+          excluded_dates: Array.isArray((initialData as any).excluded_dates) ? (initialData as any).excluded_dates : []
         });
       } else if (settingsRes?.state) {
           setFormData(prev => ({ ...prev, state: settingsRes.state }));
@@ -256,6 +255,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     setLoading(true);
 
     try {
+        const { data: { user } } = await supabase.auth.getUser();
+
+        // THE FIX: We only send columns that actually exist in the 'course_instances' table!
         const payload = {
             name: formData.name,
             template_id: formData.template_id,
@@ -267,17 +269,16 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             scheduling_mode: formData.scheduling_mode,
             allowed_days: formData.allowed_days,
             subject_rules: formData.subject_rules,
-            additional_dates: formData.additional_dates,
-            excluded_dates: formData.excluded_dates,
-            status: 'active'
+            status: initialData ? (initialData as any).status : 'active'
         };
 
         let instanceId = initialData?.id;
 
         if (initialData) {
-            await supabase.from('course_instances').update(payload).eq('id', instanceId);
+            // Added explicit error catching so it never fails silently again
+            const { error } = await supabase.from('course_instances').update(payload).eq('id', instanceId);
+            if (error) throw error;
         } else {
-            const { data: { user } } = await supabase.auth.getUser();
             const { data: newInstance, error } = await supabase
                 .from('course_instances')
                 .insert([{ ...payload, user_id: user?.id }])
@@ -288,18 +289,28 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             instanceId = newInstance.id;
         }
 
+        // We handle the manual dates separately in the schedule_overrides table
         if (instanceId) {
             await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId);
             const overridesToInsert: any[] = [];
-            formData.additional_dates.forEach(date => overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'add' }));
-            formData.excluded_dates.forEach(date => overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'remove' }));
-            if (overridesToInsert.length > 0) await supabase.from('schedule_overrides').insert(overridesToInsert);
+            
+            formData.additional_dates.forEach(date => {
+                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'add' });
+            });
+            formData.excluded_dates.forEach(date => {
+                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'remove' });
+            });
+            
+            if (overridesToInsert.length > 0) {
+                const { error: overrideError } = await supabase.from('schedule_overrides').insert(overridesToInsert);
+                if (overrideError) console.error("Override Save Error:", overrideError);
+            }
         }
 
         onSuccess();
-    } catch (error) {
-        console.error(error);
-        alert("Failed to save schedule.");
+    } catch (error: any) {
+        console.error("Save Error:", error);
+        alert(`Failed to save schedule: ${error.message || 'Database rejected the update.'}`);
     } finally {
         setLoading(false);
     }
@@ -568,9 +579,9 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             <div className="flex-1 bg-slate-50 flex flex-col min-w-[350px] relative border-l border-slate-200">
                 
                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white shadow-sm z-10">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon className="text-blue-600" size={18} /> Class Schedule</h3>
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalIcon size={18} className="text-blue-600"/> Class Schedule</h3>
                     <div className="flex items-center gap-2">
-                        {calculating && <Loader2 className="animate-spin text-blue-500" size={16} />}
+                        {calculating && <Loader2 size={16} className="animate-spin text-blue-500" />}
                         <button
                             type="button"
                             onClick={handleDownloadSchedulePDF}
@@ -584,7 +595,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
                 {hasOverlaps && (
                     <div className="mx-4 mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg flex items-start gap-2 text-orange-800 text-sm shadow-sm animate-in slide-in-from-top-2">
-                        <AlertTriangle className="mt-0.5 shrink-0 text-orange-500" size={18} />
+                        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-orange-500" />
                         <div>
                             <strong className="block">Schedule Overlap Detected</strong>
                             <span className="text-xs opacity-90 block mt-0.5">Multiple subjects are scheduled on the same calendar day.</span>
@@ -601,7 +612,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                             if (item.type === 'term_marker') {
                                 return (
                                     <div key={`term-${idx}`} className="mx-2 mt-6 mb-3 p-3 bg-slate-800 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
-                                        <Flag className="text-blue-400" size={16} /> {item.summary}
+                                        <Flag size={16} className="text-blue-400" /> {item.summary}
                                     </div>
                                 );
                             }
@@ -636,7 +647,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                         <div>
                                             <div className={`font-bold text-sm ${isOverlap ? 'text-orange-800' : 'text-slate-700'} flex items-center gap-2`}>
                                                 {item.start.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-                                                {isOverlap && <AlertTriangle className="text-orange-500" size={14} title="Multiple subjects scheduled on this day" />}
+                                                {isOverlap && <AlertTriangle size={14} className="text-orange-500" title="Multiple subjects scheduled on this day" />}
                                             </div>
                                             {formData.scheduling_mode === 'flexible' && <div className={`text-[10px] font-bold mt-0.5 line-clamp-1 ${isOverlap ? 'text-orange-600' : 'text-purple-600'}`}>{item.summary}</div>}
                                         </div>
