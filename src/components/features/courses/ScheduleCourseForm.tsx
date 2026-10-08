@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ApiService } from '../../../services/api';
 import { supabase } from '../../../services/supabase';
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
-import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff, Flag, Download } from 'lucide-react';
+import { X, Loader2, Calendar as CalIcon, Trash2, Plus, AlertCircle, RotateCcw, LayoutTemplate, Layers, AlertTriangle, CalendarOff, Flag, Download, MapPin } from 'lucide-react';
 import type { CourseInstance, Course, Subject, AcademicYear } from '../../../services/api';
 
 interface ScheduleCourseFormProps {
@@ -78,10 +78,11 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     start_time: '09:00',
     hours_per_day: 6,
     delivery_mode: 'Blended',
+    location_name: '', // Managed locally and packed into subject_rules jsonb
     state: 'VIC', 
     scheduling_mode: 'consecutive' as 'consecutive' | 'flexible',
     allowed_days: [1, 2, 3, 4, 5],
-    subject_rules: {} as Record<string, { start_date: string, allowed_days: number[] }>,
+    subject_rules: {} as Record<string, any>,
     additional_dates: [] as string[],
     excluded_dates: [] as string[]
   });
@@ -101,6 +102,10 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       setRawAcademicYears(yRes || []);
 
       if (initialData) {
+        const rules = (initialData as any).subject_rules || {};
+        // Extract location_name if it was safely packed into the rules object
+        const extractedLocation = typeof rules === 'object' && rules !== null ? (rules._location_name || '') : '';
+
         setFormData({
           name: initialData.name || '',
           template_id: initialData.template_id || '',
@@ -108,10 +113,11 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           start_time: initialData.start_time || '09:00',
           hours_per_day: initialData.hours_per_day || 6,
           delivery_mode: initialData.delivery_mode || 'Blended',
+          location_name: extractedLocation,
           state: (initialData as any).state || settingsRes?.state || 'VIC',
           scheduling_mode: (initialData as any).scheduling_mode || 'consecutive',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
-          subject_rules: (initialData as any).subject_rules || {},
+          subject_rules: rules,
           additional_dates: Array.isArray((initialData as any).additional_dates) ? (initialData as any).additional_dates : [],
           excluded_dates: Array.isArray((initialData as any).excluded_dates) ? (initialData as any).excluded_dates : []
         });
@@ -257,7 +263,12 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     try {
         const { data: { user } } = await supabase.auth.getUser();
 
-        // THE FIX: We only send columns that actually exist in the 'course_instances' table!
+        // Pack the location name safely inside the existing subject_rules jsonb column
+        const finalRules = {
+            ...(typeof formData.subject_rules === 'object' && formData.subject_rules !== null ? formData.subject_rules : {}),
+            _location_name: formData.location_name
+        };
+
         const payload = {
             name: formData.name,
             template_id: formData.template_id,
@@ -268,14 +279,13 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             state: formData.state,
             scheduling_mode: formData.scheduling_mode,
             allowed_days: formData.allowed_days,
-            subject_rules: formData.subject_rules,
+            subject_rules: finalRules,
             status: initialData ? (initialData as any).status : 'active'
         };
 
         let instanceId = initialData?.id;
 
         if (initialData) {
-            // Added explicit error catching so it never fails silently again
             const { error } = await supabase.from('course_instances').update(payload).eq('id', instanceId);
             if (error) throw error;
         } else {
@@ -289,7 +299,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             instanceId = newInstance.id;
         }
 
-        // We handle the manual dates separately in the schedule_overrides table
         if (instanceId) {
             await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId);
             const overridesToInsert: any[] = [];
@@ -302,8 +311,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             });
             
             if (overridesToInsert.length > 0) {
-                const { error: overrideError } = await supabase.from('schedule_overrides').insert(overridesToInsert);
-                if (overrideError) console.error("Override Save Error:", overrideError);
+                await supabase.from('schedule_overrides').insert(overridesToInsert);
             }
         }
 
@@ -338,7 +346,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       dateCounts[d] = (dateCounts[d] || 0) + 1;
   });
   const overlappingDates = Object.keys(dateCounts).filter(d => dateCounts[d] > 1);
-  const hasOverlaps = formData.scheduling_mode === 'flexible' && overlappingDates.length > 0;
+  const hasOverlaps = formData.scheduling_mode === 'flexible' && overlappingDates.length > 1;
 
   const handleDownloadSchedulePDF = () => {
     if (timeline.length === 0) return alert("Please generate a schedule first.");
@@ -388,7 +396,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           <h1>${formData.name || 'Cohort Schedule Preview'}</h1>
           <div class="meta">
             <strong>Template:</strong> ${templateName} &bull; 
-            <strong>Mode:</strong> ${formData.delivery_mode} &bull; 
+            <strong>Mode:</strong> ${formData.delivery_mode} ${formData.location_name ? `&bull; <strong>Venue:</strong> ${formData.location_name}` : ''} &bull; 
             <strong>State:</strong> ${formData.state} &bull;
             <strong>Start Date:</strong> ${formData.start_date}
           </div>
@@ -420,7 +428,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
             <h2 className="text-xl font-bold text-slate-800">{initialData ? 'Edit Cohort Schedule' : 'Schedule New Cohort'}</h2>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Select the state to automatically apply the correct term breaks and holidays.</p>
+            <p className="text-xs text-slate-500 flex items-center gap-1 mt-1"><AlertCircle size={12}/> Select state and configure venue details.</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
         </div>
@@ -466,6 +474,19 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
                                     <option value="Blended">Blended</option><option value="Online">Online</option><option value="On Campus">On Campus</option>
                                 </select>
                             </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
+                                    <MapPin size={12} /> Venue / Room Name
+                                </label>
+                                <input 
+                                    className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" 
+                                    value={formData.location_name} 
+                                    onChange={e => setFormData({...formData, location_name: e.target.value})} 
+                                    placeholder="e.g. Room 3B / Main Campus" 
+                                />
+                            </div>
+
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Base Start Date</label>
                                 <input required type="date" className="w-full border border-slate-300 p-2.5 rounded-lg bg-white" value={formData.start_date} onChange={e => setFormData({...formData, start_date: e.target.value})} />

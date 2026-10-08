@@ -13,7 +13,7 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// THE FIX: Forces the ID back to a Number so the scheduler's math works flawlessly
+// THE FIX: Normalizes missing start_date labels and trims the ID for the scheduler
 const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => {
     const cleanState = (targetState || 'VIC').toUpperCase();
     
@@ -48,7 +48,7 @@ const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => 
             ...y, 
             terms, 
             holidays, 
-            id: parseInt(String(y.id).split('-')[0], 10) // <-- Forces it to be an Integer
+            id: parseInt(String(y.id).split('-')[0], 10)
         };
     });
 };
@@ -171,6 +171,12 @@ export const CalendarView = () => {
                 fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration)); 
                 fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
 
+                // Extract location safely from the jsonb column where we hid it!
+                const rules = instance.subject_rules || {};
+                const locName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
+                const baseMode = instance.delivery_mode || 'Blended';
+                const finalLocation = locName ? `${baseMode} (${locName})` : (baseMode === 'Online' ? 'Online' : 'On Campus');
+
                 return {
                     ...ev, 
                     start: fixedStart, 
@@ -179,7 +185,7 @@ export const CalendarView = () => {
                     teacherName: teacher?.name || 'Unassigned',
                     teacherColor: teacher?.color || '#94a3b8', 
                     teacherEmail: teacher?.email, 
-                    location: instance.delivery_mode === 'Online' ? 'Online' : 'On Campus',
+                    location: finalLocation,
                     isUnassigned: !teacher, 
                     uniqueKey: `${instance.id}|${getLocalIsoString(fixedStart)}|${teacher?.id || 'unassigned'}|${ev.summary}` 
                 };
@@ -582,9 +588,9 @@ export const CalendarView = () => {
                         </div>
                         <div>
                             <div className="text-xs font-bold text-slate-400 uppercase mb-1">Delivery</div>
-                            <div className={`font-medium px-3 py-2 rounded-lg border flex items-center gap-1.5 ${selectedEvent.location === 'Online' ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-purple-50 text-purple-700 border-purple-100'}`}>
-                                {selectedEvent.location === 'Online' ? <Globe size={14} /> : <MapPin size={14} />} 
-                                {selectedEvent.location}
+                            <div className={`font-medium px-3 py-2 rounded-lg border flex items-center gap-1.5 ${selectedEvent.location && selectedEvent.location.includes('Online') ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-purple-50 text-purple-700 border-purple-100'}`}>
+                                {selectedEvent.location && selectedEvent.location.includes('Online') ? <Globe size={14} /> : <MapPin size={14} />} 
+                                {selectedEvent.location || 'On Campus'}
                             </div>
                         </div>
                     </div>

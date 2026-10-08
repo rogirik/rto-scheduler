@@ -5,7 +5,7 @@ import type { CourseInstance, Course, UnitAllocation, Teacher, Subject, Academic
 import { generateAllEventsForInstance } from '../../../utils/scheduler';
 import { 
   Plus, Search, FileText, Settings, Loader2, Trash2, 
-  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Clock, Archive, History, ArchiveRestore
+  CheckCircle2, ShieldAlert, BookOpen, X, Edit2, AlertTriangle, Clock, Archive, History, ArchiveRestore, MapPin, Globe
 } from 'lucide-react';
 import { ScheduleCourseForm } from './ScheduleCourseForm';
 import { CourseAllocation } from './CourseAllocation';
@@ -37,7 +37,6 @@ const applyLocalTimeFix = (events: any[], instance: any) => {
     });
 };
 
-// THE FIX: Forces the ID back to a Number so the scheduler's math works flawlessly
 const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: string) => {
     const cleanState = (selectedState || 'VIC').toUpperCase();
     
@@ -78,7 +77,7 @@ const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: 
             ...y,
             terms,
             holidays,
-            id: parseInt(String(y.id).split('-')[0], 10) // <-- Forces it to be an Integer
+            id: parseInt(String(y.id).split('-')[0], 10)
         } as AcademicYear;
     });
 };
@@ -465,6 +464,11 @@ export const CourseList = () => {
       }
 
       let classCounterPrint = 1;
+      
+      // Extract location for PDF header
+      const rules = (instance as any).subject_rules || {};
+      const locationName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
+      
       const tableRowsHtml = fullTimeline.map(item => {
           if (item.type === 'term_marker') {
               return `<tr class="term-row"><td colspan="4">🚩 ${item.summary} Begins</td></tr>`;
@@ -536,7 +540,9 @@ export const CourseList = () => {
             <div id="pdf-content">
                 <h1 style="color: #0f172a; margin-bottom: 8px; font-size: 28px;">${instance.name}</h1>
                 <p style="color: #64748b; margin-top: 0; margin-bottom: 24px; font-size: 16px;">Class Schedule</p>
-                
+                <div style="font-size: 12px; color: #64748b; margin-bottom: 20px;">
+                    <strong>Mode:</strong> ${(instance as any).delivery_mode || 'Blended'} ${locationName ? `&bull; <strong>Venue:</strong> ${locationName}` : ''}
+                </div>
                 <table>
                   <thead>
                     <tr>
@@ -753,7 +759,20 @@ export const CourseList = () => {
                         )}
                     </div>
                   </td>
-                  <td className="p-4 text-sm text-slate-600">{templates.find(t => t.id === instance.template_id)?.name}</td>
+                  <td className="p-4">
+                      <div className="text-sm text-slate-700 font-medium">
+                          {templates.find(t => t.id === instance.template_id)?.name}
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                          {(instance as any).delivery_mode === 'Online' ? <Globe size={12} /> : <MapPin size={12} />}
+                          {(instance as any).delivery_mode || 'Blended'}
+                          {(() => {
+                              const r = (instance as any).subject_rules;
+                              const loc = r && typeof r === 'object' ? r._location_name : '';
+                              return loc ? <span>&bull; {loc}</span> : null;
+                          })()}
+                      </div>
+                  </td>
                   <td className="p-4 text-sm font-bold text-slate-700">
                       {instance.start_date} {stats.endDateStr ? `to ${stats.endDateStr}` : ''}
                   </td>
