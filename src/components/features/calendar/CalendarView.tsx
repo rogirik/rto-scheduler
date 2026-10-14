@@ -13,7 +13,6 @@ const getLocalIsoString = (date: Date) => {
     return `${y}-${m}-${d}`;
 };
 
-// THE FIX: Normalizes missing start_date labels and trims the ID for the scheduler
 const getFilteredAndNormalizedYears = (rawYears: any[], targetState: string) => {
     const cleanState = (targetState || 'VIC').toUpperCase();
     
@@ -80,14 +79,13 @@ export const CalendarView = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       
-      const [iRes, tRes, subRes, yearRes, aRes, teachRes, overridesRes, settingsRes] = await Promise.all([
+      const [iRes, tRes, subRes, yearRes, aRes, teachRes, settingsRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll('course_templates'),
         ApiService.getSubjects(),
         ApiService.getAll('academic_years'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'),
-        supabase.from('schedule_overrides').select('*'),
         ApiService.getSettings().catch(() => null)
       ]);
 
@@ -145,13 +143,23 @@ export const CalendarView = () => {
             const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
             const cohortYears = getFilteredAndNormalizedYears(rawYears, instanceState);
 
+            // Extract securely packed overrides locally to bypass database
+            const rules = instance.subject_rules || {};
+            const adds = Array.isArray(rules._additional_dates) ? rules._additional_dates : (Array.isArray(instance.additional_dates) ? instance.additional_dates : []);
+            const rems = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray(instance.excluded_dates) ? instance.excluded_dates : []);
+            
+            const instanceOverrides = [
+                ...adds.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'add' })),
+                ...rems.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'remove' }))
+            ];
+
             const instanceEvents = generateAllEventsForInstance(
                 instance, 
                 cohortYears, 
                 template as any, 
                 filteredSubjects as any[], 
                 filteredTeachers, 
-                overridesRes.data || []
+                instanceOverrides
             );
 
             const hydratedEvents = instanceEvents.map((ev: any) => {
@@ -171,8 +179,6 @@ export const CalendarView = () => {
                 fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration)); 
                 fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
 
-                // Extract location safely from the jsonb column where we hid it!
-                const rules = instance.subject_rules || {};
                 const locName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
                 const baseMode = instance.delivery_mode || 'Blended';
                 const finalLocation = locName ? `${baseMode} (${locName})` : (baseMode === 'Online' ? 'Online' : 'On Campus');
