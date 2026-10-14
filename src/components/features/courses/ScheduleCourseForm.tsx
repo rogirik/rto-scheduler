@@ -78,7 +78,7 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     start_time: '09:00',
     hours_per_day: 6,
     delivery_mode: 'Blended',
-    location_name: '', // Managed locally and packed into subject_rules jsonb
+    location_name: '',
     state: 'VIC', 
     scheduling_mode: 'consecutive' as 'consecutive' | 'flexible',
     allowed_days: [1, 2, 3, 4, 5],
@@ -103,8 +103,15 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
 
       if (initialData) {
         const rules = (initialData as any).subject_rules || {};
-        // Extract location_name if it was safely packed into the rules object
+        
+        // Extract safely packed locations and dates
         const extractedLocation = typeof rules === 'object' && rules !== null ? (rules._location_name || '') : '';
+        const extAdd = typeof rules === 'object' && rules !== null ? (rules._additional_dates || []) : [];
+        const extEx = typeof rules === 'object' && rules !== null ? (rules._excluded_dates || []) : [];
+        
+        // Fallback to older direct columns if they exist
+        const initialAdd = extAdd.length > 0 ? extAdd : (Array.isArray((initialData as any).additional_dates) ? (initialData as any).additional_dates : []);
+        const initialEx = extEx.length > 0 ? extEx : (Array.isArray((initialData as any).excluded_dates) ? (initialData as any).excluded_dates : []);
 
         setFormData({
           name: initialData.name || '',
@@ -118,8 +125,8 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           scheduling_mode: (initialData as any).scheduling_mode || 'consecutive',
           allowed_days: initialData.allowed_days || [1, 2, 3, 4, 5],
           subject_rules: rules,
-          additional_dates: Array.isArray((initialData as any).additional_dates) ? (initialData as any).additional_dates : [],
-          excluded_dates: Array.isArray((initialData as any).excluded_dates) ? (initialData as any).excluded_dates : []
+          additional_dates: initialAdd,
+          excluded_dates: initialEx
         });
       } else if (settingsRes?.state) {
           setFormData(prev => ({ ...prev, state: settingsRes.state }));
@@ -143,7 +150,13 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
           
-          let events = generateAllEventsForInstance(mockInstance, filteredAcademicYears, selectedTemplate, subjects, [], []);
+          // Inject live manual overrides into the preview scheduler
+          const mockOverrides = [
+              ...formData.additional_dates.map(d => ({ instance_id: 'preview', override_date: d, action_type: 'add' })),
+              ...formData.excluded_dates.map(d => ({ instance_id: 'preview', override_date: d, action_type: 'remove' }))
+          ];
+
+          let events = generateAllEventsForInstance(mockInstance, filteredAcademicYears, selectedTemplate, subjects, [], mockOverrides);
           events = events.sort((a, b) => a.start.getTime() - b.start.getTime());
           
           setGeneratedEvents(events);
@@ -263,10 +276,12 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     try {
         const { data: { user } } = await supabase.auth.getUser();
 
-        // Pack the location name safely inside the existing subject_rules jsonb column
+        // Pack the location and manual dates securely inside the JSON column
         const finalRules = {
             ...(typeof formData.subject_rules === 'object' && formData.subject_rules !== null ? formData.subject_rules : {}),
-            _location_name: formData.location_name
+            _location_name: formData.location_name,
+            _additional_dates: formData.additional_dates,
+            _excluded_dates: formData.excluded_dates
         };
 
         const payload = {
@@ -289,30 +304,12 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
             const { error } = await supabase.from('course_instances').update(payload).eq('id', instanceId);
             if (error) throw error;
         } else {
-            const { data: newInstance, error } = await supabase
+            const { error } = await supabase
                 .from('course_instances')
                 .insert([{ ...payload, user_id: user?.id }])
                 .select()
                 .single();
-                
             if (error) throw error;
-            instanceId = newInstance.id;
-        }
-
-        if (instanceId) {
-            await supabase.from('schedule_overrides').delete().eq('instance_id', instanceId);
-            const overridesToInsert: any[] = [];
-            
-            formData.additional_dates.forEach(date => {
-                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'add' });
-            });
-            formData.excluded_dates.forEach(date => {
-                overridesToInsert.push({ instance_id: instanceId, override_date: date, action_type: 'remove' });
-            });
-            
-            if (overridesToInsert.length > 0) {
-                await supabase.from('schedule_overrides').insert(overridesToInsert);
-            }
         }
 
         onSuccess();
