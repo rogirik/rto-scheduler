@@ -82,8 +82,17 @@ const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: 
     });
 };
 
+// THE FIX: Securely parse the JSON column so Supabase can't break it by returning text
+const getSubjectRules = (instance: any) => {
+    let rules = instance.subject_rules;
+    if (typeof rules === 'string') {
+        try { rules = JSON.parse(rules); } catch(e) { rules = {}; }
+    }
+    return rules || {};
+};
+
 const getInstanceOverrides = (instance: any) => {
-    const rules = instance.subject_rules || {};
+    const rules = getSubjectRules(instance);
     const adds = Array.isArray(rules._additional_dates) ? rules._additional_dates : (Array.isArray(instance.additional_dates) ? instance.additional_dates : []);
     const rems = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray(instance.excluded_dates) ? instance.excluded_dates : []);
     
@@ -446,7 +455,7 @@ export const CourseList = () => {
           });
       });
 
-      const rules = (instance as any).subject_rules || {};
+      const rules = getSubjectRules(instance);
       const exDates = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray((instance as any).excluded_dates) ? (instance as any).excluded_dates : []);
       
       exDates.forEach(dStr => {
@@ -475,7 +484,7 @@ export const CourseList = () => {
       }
 
       let classCounterPrint = 1;
-      const locationName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
+      const locationName = rules._location_name || '';
       
       const tableRowsHtml = fullTimeline.map(item => {
           if (item.type === 'term_marker') {
@@ -775,8 +784,8 @@ export const CourseList = () => {
                           {(instance as any).delivery_mode === 'Online' ? <Globe size={12} /> : <MapPin size={12} />}
                           {(instance as any).delivery_mode || 'Blended'}
                           {(() => {
-                              const r = (instance as any).subject_rules;
-                              const loc = r && typeof r === 'object' ? r._location_name : '';
+                              const r = getSubjectRules(instance);
+                              const loc = r._location_name || '';
                               return loc ? <span>&bull; {loc}</span> : null;
                           })()}
                       </div>
