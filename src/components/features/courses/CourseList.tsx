@@ -82,6 +82,17 @@ const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: 
     });
 };
 
+const getInstanceOverrides = (instance: any) => {
+    const rules = instance.subject_rules || {};
+    const adds = Array.isArray(rules._additional_dates) ? rules._additional_dates : (Array.isArray(instance.additional_dates) ? instance.additional_dates : []);
+    const rems = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray(instance.excluded_dates) ? instance.excluded_dates : []);
+    
+    return [
+        ...adds.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'add' })),
+        ...rems.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'remove' }))
+    ];
+};
+
 export const CourseList = () => {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
@@ -97,7 +108,6 @@ export const CourseList = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [rawAcademicYears, setRawAcademicYears] = useState<AcademicYear[]>([]);
   
-  const [scheduleOverrides, setScheduleOverrides] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
 
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -116,17 +126,16 @@ export const CourseList = () => {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
 
-      const [iRes, tRes, aRes, teachRes, subRes, yearRes, overridesRes] = await Promise.all([
+      const [iRes, tRes, aRes, teachRes, subRes, yearRes, settingsRes] = await Promise.all([
         ApiService.getCourseInstances(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getAllocationsGlobal(),
         supabase.from('teachers').select('*'), 
         ApiService.getSubjects(),
         ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('schedule_overrides').select('*')
+        ApiService.getSettings().catch(() => null)
       ]);
 
-      setScheduleOverrides(overridesRes.data || []); 
       setRawAcademicYears(yearRes || []);
 
       let filteredInstances = iRes || [];
@@ -236,7 +245,7 @@ export const CourseList = () => {
                   template, 
                   subjects, 
                   teachers, 
-                  scheduleOverrides
+                  getInstanceOverrides(instance)
               );
               
               if (events.length > 0) {
@@ -284,7 +293,7 @@ export const CourseList = () => {
             if (!temp) return;
             
             const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (inst as any).state);
-            let evs = generateAllEventsForInstance(inst as any, instanceAcademicYears, temp, subjects, teachers, scheduleOverrides);
+            let evs = generateAllEventsForInstance(inst as any, instanceAcademicYears, temp, subjects, teachers, getInstanceOverrides(inst));
             evs = applyLocalTimeFix(evs, inst);
 
             allGlobalEvents.push(...evs.map(e => ({ ...e, instanceId: inst.id })));
@@ -403,7 +412,7 @@ export const CourseList = () => {
       
       const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (instance as any).state);
 
-      let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, scheduleOverrides);
+      let events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template, subjects, teachers, getInstanceOverrides(instance));
       events = applyLocalTimeFix(events, instance);
 
       if (events.length === 0) {
@@ -437,7 +446,9 @@ export const CourseList = () => {
           });
       });
 
-      const exDates = Array.isArray((instance as any).excluded_dates) ? (instance as any).excluded_dates : [];
+      const rules = (instance as any).subject_rules || {};
+      const exDates = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray((instance as any).excluded_dates) ? (instance as any).excluded_dates : []);
+      
       exDates.forEach(dStr => {
           const dDate = new Date(dStr);
           dDate.setHours(12,0,0,0);
@@ -464,9 +475,6 @@ export const CourseList = () => {
       }
 
       let classCounterPrint = 1;
-      
-      // Extract location for PDF header
-      const rules = (instance as any).subject_rules || {};
       const locationName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
       
       const tableRowsHtml = fullTimeline.map(item => {
@@ -619,7 +627,7 @@ export const CourseList = () => {
         template, 
         subjects, 
         teachers, 
-        scheduleOverrides
+        getInstanceOverrides(instance)
     );
     
     if (events.length > 0) {
