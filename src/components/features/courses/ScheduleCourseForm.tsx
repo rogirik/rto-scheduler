@@ -102,14 +102,15 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
       setRawAcademicYears(yRes || []);
 
       if (initialData) {
-        const rules = (initialData as any).subject_rules || {};
+        let rules = (initialData as any).subject_rules || {};
+        if (typeof rules === 'string') {
+            try { rules = JSON.parse(rules); } catch(e) { rules = {}; }
+        }
         
-        // Extract safely packed locations and dates
-        const extractedLocation = typeof rules === 'object' && rules !== null ? (rules._location_name || '') : '';
-        const extAdd = typeof rules === 'object' && rules !== null ? (rules._additional_dates || []) : [];
-        const extEx = typeof rules === 'object' && rules !== null ? (rules._excluded_dates || []) : [];
+        const extractedLocation = rules._location_name || '';
+        const extAdd = Array.isArray(rules._additional_dates) ? rules._additional_dates : [];
+        const extEx = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : [];
         
-        // Fallback to older direct columns if they exist
         const initialAdd = extAdd.length > 0 ? extAdd : (Array.isArray((initialData as any).additional_dates) ? (initialData as any).additional_dates : []);
         const initialEx = extEx.length > 0 ? extEx : (Array.isArray((initialData as any).excluded_dates) ? (initialData as any).excluded_dates : []);
 
@@ -150,7 +151,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
           const selectedTemplate = templates.find(t => t.id === formData.template_id);
           const mockInstance = { ...formData, id: 'preview' } as unknown as CourseInstance;
           
-          // Inject live manual overrides into the preview scheduler
           const mockOverrides = [
               ...formData.additional_dates.map(d => ({ instance_id: 'preview', override_date: d, action_type: 'add' })),
               ...formData.excluded_dates.map(d => ({ instance_id: 'preview', override_date: d, action_type: 'remove' }))
@@ -276,7 +276,6 @@ export const ScheduleCourseForm = ({ initialData, onClose, onSuccess }: Schedule
     try {
         const { data: { user } } = await supabase.auth.getUser();
 
-        // Pack the location and manual dates securely inside the JSON column
         const finalRules = {
             ...(typeof formData.subject_rules === 'object' && formData.subject_rules !== null ? formData.subject_rules : {}),
             _location_name: formData.location_name,
