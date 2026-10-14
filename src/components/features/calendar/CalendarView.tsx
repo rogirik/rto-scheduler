@@ -143,8 +143,12 @@ export const CalendarView = () => {
             const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
             const cohortYears = getFilteredAndNormalizedYears(rawYears, instanceState);
 
-            // Extract securely packed overrides locally to bypass database
-            const rules = instance.subject_rules || {};
+            // THE FIX: Secure JSON parsing for the calendar view overrides
+            let rules = instance.subject_rules || {};
+            if (typeof rules === 'string') {
+                try { rules = JSON.parse(rules); } catch(e) { rules = {}; }
+            }
+
             const adds = Array.isArray(rules._additional_dates) ? rules._additional_dates : (Array.isArray(instance.additional_dates) ? instance.additional_dates : []);
             const rems = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray(instance.excluded_dates) ? instance.excluded_dates : []);
             
@@ -179,7 +183,7 @@ export const CalendarView = () => {
                 fixedEnd.setHours(fixedStart.getHours() + Math.floor(duration)); 
                 fixedEnd.setMinutes(fixedStart.getMinutes() + ((duration % 1) * 60));
 
-                const locName = typeof rules === 'object' && rules !== null ? rules._location_name : '';
+                const locName = rules._location_name || '';
                 const baseMode = instance.delivery_mode || 'Blended';
                 const finalLocation = locName ? `${baseMode} (${locName})` : (baseMode === 'Online' ? 'Online' : 'On Campus');
 
