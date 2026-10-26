@@ -27,6 +27,72 @@ import {
 // Mobile View
 import { TeacherMobileAgenda } from '../mobile/TeacherMobileAgenda';
 
+// --- ADDED FIXES FOR DATA NORMALIZATION ---
+const getFilteredAndNormalizedYears = (rawYears: AcademicYear[], selectedState: string) => {
+    const cleanState = (selectedState || 'VIC').toUpperCase();
+    
+    return rawYears.map(y => {
+        let t = (y as any).terms;
+        while(typeof t === 'string') { try { t = JSON.parse(t); } catch(e) { break; } }
+        let h = (y as any).holidays;
+        while(typeof h === 'string') { try { h = JSON.parse(h); } catch(e) { break; } }
+        
+        return { 
+            ...y, 
+            terms: Array.isArray(t) ? t : [], 
+            holidays: Array.isArray(h) ? h : [] 
+        } as AcademicYear;
+    }).filter(y => {
+        const s = ((y as any).state || '').toString().toUpperCase();
+        if (s === 'NATIONAL' || s === 'ALL' || s === cleanState) return true;
+        if (y.id && String(y.id).toUpperCase().includes(`-${cleanState}`)) return true;
+        if (!s && !String(y.id).includes('-')) return true; 
+        return false;
+    }).map(y => {
+        const terms = y.terms.map((term: any) => ({
+            ...term,
+            start_date: term.start_date || term.start,
+            end_date: term.end_date || term.end,
+            start: term.start || term.start_date,
+            end: term.end || term.end_date,
+            state: cleanState
+        }));
+
+        const holidays = y.holidays.map((hol: any) => ({
+            ...hol,
+            date: hol.date || hol.start || hol.start_date,
+            state: cleanState
+        }));
+
+        return {
+            ...y,
+            terms,
+            holidays,
+            id: parseInt(String(y.id).split('-')[0], 10)
+        } as AcademicYear;
+    });
+};
+
+const getSubjectRules = (instance: any) => {
+    let rules = instance.subject_rules;
+    if (typeof rules === 'string') {
+        try { rules = JSON.parse(rules); } catch(e) { rules = {}; }
+    }
+    return rules || {};
+};
+
+const getInstanceOverrides = (instance: any) => {
+    const rules = getSubjectRules(instance);
+    const adds = Array.isArray(rules._additional_dates) ? rules._additional_dates : (Array.isArray(instance.additional_dates) ? instance.additional_dates : []);
+    const rems = Array.isArray(rules._excluded_dates) ? rules._excluded_dates : (Array.isArray(instance.excluded_dates) ? instance.excluded_dates : []);
+    
+    return [
+        ...adds.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'add' })),
+        ...rems.map((d: string) => ({ instance_id: instance.id, override_date: d, action_type: 'remove' }))
+    ];
+};
+// ---------------------------------------------
+
 export const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,14 +131,13 @@ export const Dashboard = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) setUserEmail(user.email || '');
 
-      const [iRes, tRes, aRes, tempRes, subRes, yRes, overridesRes] = await Promise.all([
+      const [iRes, tRes, aRes, tempRes, subRes, yRes] = await Promise.all([
         ApiService.getCourseInstances(),
         supabase.from('teachers').select('*'), 
         ApiService.getAllocationsGlobal(),
         ApiService.getAll<Course>('course_templates'),
         ApiService.getSubjects(),
-        ApiService.getAll<AcademicYear>('academic_years'),
-        supabase.from('schedule_overrides').select('*') // NEW: Ensure accurate dashboard dates
+        ApiService.getAll<AcademicYear>('academic_years')
       ]);
 
       let instances = iRes || [];
@@ -80,8 +145,7 @@ export const Dashboard = () => {
       let allocations = aRes || [];
       let templates = tempRes || [];
       let subjects = subRes || [];
-      let academicYears = yRes || [];
-      let scheduleOverrides = overridesRes.data || [];
+      let rawAcademicYears = yRes || [];
       let myOrgId = null;
       let role: 'admin' | 'teacher' = 'teacher';
 
@@ -122,7 +186,7 @@ export const Dashboard = () => {
           allocations = allocations.filter(a => validInstanceIds.has(a.instance_id));
       }
 
-      const activeInstances = instances.filter(i => i.status !== 'completed');
+      const activeInstances = instances.filter(i => i.status !== 'completed' && i.status !== 'archived');
       const currentYear = new Date().getFullYear(); 
       const teacherHoursMap: Record<string, number> = {};
       const tSchedules: Record<string, any[]> = {};
@@ -147,9 +211,13 @@ export const Dashboard = () => {
                 }
             }
 
-            const events = generateAllEventsForInstance(instance as any, academicYears, template as any, subjects, teachers, scheduleOverrides);
+            // APPLIED FIX: Safe Year Normalization and Secure Override Extraction
+            const instanceAcademicYears = getFilteredAndNormalizedYears(rawAcademicYears, (instance as any).state || 'VIC');
+            const safeOverrides = getInstanceOverrides(instance);
+            
+            const events = generateAllEventsForInstance(instance as any, instanceAcademicYears, template as any, subjects, teachers, safeOverrides);
 
-            // --- THE FIX: Flexible Overlap Detection for Dashboard ---
+            // Flexible Overlap Detection for Dashboard
             if ((instance as any).scheduling_mode === 'flexible') {
                 const dateCounts: Record<string, number> = {};
                 let overlapFound = false;
@@ -191,7 +259,7 @@ export const Dashboard = () => {
           
           if (role === 'teacher') {
             setMyProfile(currentTeacher);
-            setBlackoutDates(currentTeacher.blackout_dates || []); // Load existing leave dates
+            setBlackoutDates(currentTeacher.blackout_dates || []);
             if (currentTeacher.competencies) {
               const quals = subjects.filter(s => currentTeacher.competencies.includes(s.id)).map(s => s.name);
               setMyQualifications(quals);
