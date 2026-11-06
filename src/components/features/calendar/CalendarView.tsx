@@ -143,7 +143,6 @@ export const CalendarView = () => {
             const instanceState = (instance.state || settingsRes?.state || settingsRes?.default_state || 'VIC').toString().toUpperCase();
             const cohortYears = getFilteredAndNormalizedYears(rawYears, instanceState);
 
-            // THE FIX: Secure JSON parsing for the calendar view overrides
             let rules = instance.subject_rules || {};
             if (typeof rules === 'string') {
                 try { rules = JSON.parse(rules); } catch(e) { rules = {}; }
@@ -249,36 +248,6 @@ export const CalendarView = () => {
           ? events.filter(e => e.teacherId === selectedFilter) 
           : events.filter(e => e.instanceId === selectedFilter);
 
-  const getMergedEvents = (rawEvents: any[]) => {
-    if (rawEvents.length === 0) return [];
-    const sorted = [...rawEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
-    const merged: any[] = []; 
-    let currentGroup: any = null;
-
-    sorted.forEach((ev) => {
-        const evKey = `${ev.summary}|${ev.teacherName}`;
-        
-        if (!currentGroup) { 
-            currentGroup = { ...ev, endDate: ev.start, key: evKey }; 
-        } else {
-            const prevDate = new Date(currentGroup.endDate); 
-            prevDate.setDate(prevDate.getDate() + 1); 
-            
-            const isNextDay = getLocalIsoString(ev.start) === getLocalIsoString(prevDate);
-            const isMondayAfterFriday = (currentGroup.endDate.getDay() === 5 && ev.start.getDay() === 1 && (ev.start.getTime() - currentGroup.endDate.getTime()) < 345600000); 
-            
-            if (evKey === currentGroup.key && (isNextDay || isMondayAfterFriday)) { 
-                currentGroup.endDate = ev.start; 
-            } else { 
-                merged.push(currentGroup); 
-                currentGroup = { ...ev, endDate: ev.start, key: evKey }; 
-            }
-        }
-    });
-    if (currentGroup) merged.push(currentGroup);
-    return merged;
-  };
-
   const getTermForDate = (date: Date) => {
       const time = date.getTime();
       for (const y of academicYears) {
@@ -293,13 +262,13 @@ export const CalendarView = () => {
 
   const handleExportCSV = () => {
     if (filteredEvents.length === 0) return alert("No events to export.");
-    const mergedList = getMergedEvents(filteredEvents);
-    const headers = ["Date Range", "Start Time", "End Time", "Subject", "Teacher", "Cohort", "Term"];
     
-    const rows = mergedList.map(ev => {
-        const dateStr = getLocalIsoString(ev.start) === getLocalIsoString(ev.endDate) 
-            ? ev.start.toLocaleDateString('en-GB') 
-            : `${ev.start.toLocaleDateString('en-GB')} - ${ev.endDate.toLocaleDateString('en-GB')}`;
+    // Sort events chronologically to export exactly as they occur
+    const sortedEvents = [...filteredEvents].sort((a, b) => a.start.getTime() - b.start.getTime());
+    const headers = ["Date", "Start Time", "End Time", "Subject", "Teacher", "Cohort", "Location", "Term"];
+    
+    const rows = sortedEvents.map(ev => {
+        const dateStr = ev.start.toLocaleDateString('en-GB'); 
             
         return [
             `"${dateStr}"`, 
@@ -307,7 +276,8 @@ export const CalendarView = () => {
             ev.end.toLocaleTimeString('en-GB', { hour: '2-digit', minute:'2-digit' }), 
             `"${ev.summary}"`, 
             `"${ev.teacherName}"`, 
-            `"${ev.courseName}"`, 
+            `"${ev.courseName}"`,
+            `"${ev.location || ''}"`, 
             `"${getTermForDate(ev.start)}"`
         ].join(",");
     });
