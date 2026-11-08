@@ -151,7 +151,7 @@ export const Dashboard = () => {
 
       if (user) {
           try {
-              const { data: profile } = await supabase.from('user_profiles').select('organization_id, role').eq('id', user.id).single();
+              const { data: profile } = await supabase.from('user_profiles').select('organization_id, role').eq('id', user.id).maybeSingle();
               if (profile) {
                   myOrgId = profile.organization_id;
                   if (profile.role === 'admin') role = 'admin';

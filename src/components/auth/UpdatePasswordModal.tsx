@@ -1,79 +1,66 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { supabase } from '../../services/supabase';
-import { Lock, Save, Loader2, AlertCircle } from 'lucide-react';
+import { Lock, Loader2 } from 'lucide-react';
 
-export const UpdatePasswordModal = () => {
-  const [isOpen, setIsOpen] = useState(false);
+export const UpdatePasswordModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    // Listen for the "Password Recovery" event from Supabase
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        setIsOpen(true);
-      }
-    });
-    return () => subscription.unsubscribe();
-  }, []);
+  if (!isOpen) return null;
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError(null);
+    setError('');
 
-    try {
-      const { error } = await supabase.auth.updateUser({ password: password });
-      if (error) throw error;
-      
-      alert("Password updated successfully!");
-      setIsOpen(false);
-      window.location.hash = ''; // Clear the URL hash
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+    const { error } = await supabase.auth.updateUser({ password });
+
+    if (error) {
+      setError(error.message);
+    } else {
+      onClose();
+      window.location.hash = ''; // Clear just in case
+      alert('Password updated successfully!');
     }
+    
+    setLoading(false);
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 animate-in zoom-in-95">
-        <div className="text-center mb-6">
-          <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-3">
-            <Lock size={24} />
-          </div>
-          <h2 className="text-xl font-bold text-slate-900">Set New Password</h2>
-          <p className="text-slate-500 text-sm">Please enter a new password for your account.</p>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 animate-in fade-in zoom-in">
+        <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mb-6">
+          <Lock size={24} />
         </div>
-
+        <h2 className="text-2xl font-bold text-slate-800 mb-2">Reset Password</h2>
+        <p className="text-slate-500 mb-6">You have securely logged in. Please enter your new password below.</p>
+        
         {error && (
-          <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2">
-            <AlertCircle size={16} /> {error}
+          <div className="p-3 mb-4 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
+            {error}
           </div>
         )}
-
+        
         <form onSubmit={handleUpdate} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">New Password</label>
-            <input
-              type="password"
+            <label className="block text-sm font-bold text-slate-700 mb-1">New Password</label>
+            <input 
+              type="password" 
               required
-              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              onChange={e => setPassword(e.target.value)}
+              className="w-full border border-slate-300 p-3 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+              minLength={6}
+              placeholder="Minimum 6 characters"
             />
           </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2"
+          <button 
+            type="submit" 
+            disabled={loading || password.length < 6}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex justify-center items-center gap-2 disabled:opacity-50 transition-all shadow-sm"
           >
-            {loading ? <Loader2 className="animate-spin" /> : <><Save size={18} /> Update Password</>}
+            {loading ? <Loader2 className="animate-spin" size={18} /> : 'Update Password'}
           </button>
         </form>
       </div>
